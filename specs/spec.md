@@ -19,11 +19,10 @@ AutoDev is local-first, uses your existing Claude Code subscription (BYOA), and 
 
 ## Tech Stack
 
-- **Desktop shell**: Tauri 2.x (Rust backend, no sidecar)
+- **Desktop shell**: Tauri 2.x (Rust backend)
 - **Frontend**: Svelte 5 (runes) + TypeScript + shadcn-svelte + Tailwind CSS v3
-- **Database**: SQLite (bundled, stored at `~/.autodev/autodev.db`)
-- **AI**: Spawns the `claude` CLI directly from Rust (no Agent SDK, no Node.js)
-- **Drag & drop**: svelte-dnd-action
+- **Database**: SQLite
+- **AI**: Spawns the `claude` CLI directly from Rust (no Agent SDK)
 - **Icons**: lucide-svelte
 
 ## Core Flow
@@ -52,9 +51,30 @@ Six columns, driven entirely by GitHub labels:
 
 Labels are the source of truth. When a repo is first added, AutoDev ensures the `autodev:*` labels exist on GitHub.
 
+### Drag-and-Drop Rules
+
+- Cards can only be dragged from **Backlog → Claimed** (starts Spec) or **Backlog → In Progress** (skips Spec, starts Implement)
+- **While a Claude session is active, the card is locked** — it cannot be dragged anywhere
+- All other column transitions are automated by the pipeline
+
+### Card Session States
+
+Cards with active or recent sessions show a status indicator:
+
+| State | Meaning |
+|---|---|
+| Initializing | Worktree being created, setup script running, Claude session starting |
+| In Progress | Claude is actively running |
+| Canceled | User stopped the session, or the app closed unexpectedly |
+
+- **Stop button**: Cards with an active session (Initializing or In Progress) show a stop button to pause/cancel the session
+- **Resume button**: Canceled cards show a resume button that sends "keep going" to the existing Claude session to continue where it left off
+- **Canceled cards stay in their current column** until the user either resumes them or drags them to Backlog or Done
+- Canceled cards are **draggable** (unlike active sessions) — they can be moved to Backlog (abandon work) or Done (if finished manually)
+
 ## GitHub Integration
 
-- **Auth**: GitHub OAuth device flow (user enters a code in the browser)
+- **Auth**: GitHub CLI Auth
 - **Sync**: Polls GitHub REST API with ETags every 15 seconds (configurable). 304s don't count against rate limits. No webhooks needed.
 - **Team use**: GitHub is the shared state. Each team member runs their own app. Everyone sees the same board because everyone polls the same labels. The app only auto-starts Claude for issues assigned to the current user.
 
@@ -104,8 +124,8 @@ All 5 stage prompts (Spec, Implement, Review, CI Fix, Merge Conflict) are user-e
 
 Each issue gets its own git worktree so multiple issues can run in parallel without touching the user's main working tree. Worktrees are created when an issue is first claimed and deleted after the PR is merged.
 
-- **Branch naming**: `{configurable prefix}issue-{number}` (default: `autodev/issue-42`)
-- **Worktree path**: `{repo path}/{configurable dir}/issue-{number}/` (default: `.worktrees/issue-42/`)
+- **Branch naming**: `{configurable prefix}issue-{number` (default: `autodev/issue-42`)
+- **Worktree path**: `~/.autodev/{repo-name}/issue-{number}/`
 
 ## Settings
 
@@ -142,17 +162,17 @@ All settings are stored locally in SQLite, not in the repo.
 - Orange pulsing dot if Blocked
 - Click to open detail panel
 
-### Card Detail Panel
-- Slide-over from right
+### Card Detail Modal
+- Click any card to open a **modal** over the board
 - Issue title and body (editable)
 - Current session info (stage, status, elapsed time)
-- Activity log: scrollable stream of session output (tool calls, messages, errors)
-- If Blocked: text input to respond
+- **Chat-style Claude Code UI**: custom conversation view (not a TUI embed) showing Claude's messages, tool calls, and outputs — with a text input at the bottom to send messages to the session. Similar to web-based Claude Code interfaces.
+- If Blocked: text input to respond (or use the chat input)
 - If Ready for Review: Test and Merge buttons
 - Link to GitHub issue
+- **Modal style**: centered shadcn-svelte dialog with the board dimmed behind it (not full-screen)
 
 ### Other Screens
-- **Login screen**: GitHub OAuth device flow (shows code, "Open GitHub" link, waiting spinner)
 - **New Issue dialog**: title, body, assignee, "Create" or "Create & Start"
 - **Settings dialog**: app settings, agent prompts (per stage), repo settings (per repo)
 
