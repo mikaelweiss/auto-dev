@@ -1,6 +1,7 @@
 {
   "name": "auto-dev",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
@@ -9,9 +10,20 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/node": "^25.5.0",
+    "svelte-check": "^4.4.6",
+    "typescript": "^6.0.2",
     "vite": "^6"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2"
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tauri-apps/api": "^2",
+    "autoprefixer": "^10.4.27",
+    "clsx": "^2.1.1",
+    "lucide-svelte": "^1.0.1",
+    "postcss": "^8.5.8",
+    "svelte": "^5.55.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "3"
   }
 }
