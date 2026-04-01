@@ -1,121 +1,95 @@
 <script lang="ts">
-  import { Square, Play, AlertCircle, Loader } from "lucide-svelte";
-  import type { Issue } from "../types";
-  import { timeAgo } from "../utils";
-  import { setSelectedIssue, stopSession, resumeSession } from "../store.svelte";
+	import type { Issue } from '$lib/types';
+	import { getColumnForIssue } from '$lib/types';
+	import { sessionByIssue } from '$lib/stores/sessions';
+	import { repos } from '$lib/stores/repos';
+	import { selectedIssue } from '$lib/stores/ui';
+	import * as backend from '$lib/stores/backend';
+	import { Play, AlertCircle } from 'lucide-svelte';
 
-  let { issue }: { issue: Issue } = $props();
+	let { issue }: { issue: Issue } = $props();
 
-  function stageLabel(stage: Issue["stage"]): string {
-    if (!stage) return "";
-    const labels: Record<string, string> = {
-      spec: "Spec",
-      implement: "Implement",
-      review: "Review",
-      "ci-fix": "CI Fix",
-      "merge-conflict": "Merge Conflict",
-    };
-    return labels[stage] ?? stage;
-  }
+	let column = $derived(getColumnForIssue(issue));
 
-  function handleDragStart(e: DragEvent) {
-    if (issue.sessionState === "in-progress" || issue.sessionState === "initializing") {
-      e.preventDefault();
-      return;
-    }
-    e.dataTransfer?.setData("text/plain", String(issue.id));
-  }
+	let repoConfig = $derived($repos.find((r) => r.owner === issue.repo_owner && r.name === issue.repo_name));
+	let sessionKey = $derived(repoConfig ? `${repoConfig.id}:${issue.number}` : null);
+	let session = $derived(sessionKey ? $sessionByIssue.get(sessionKey) ?? null : null);
+	let hasError = $derived(session?.status === 'failed');
 
-  function handleStop(e: MouseEvent) {
-    e.stopPropagation();
-    stopSession(issue.id);
-  }
+	function timeAgo(dateStr: string): string {
+		const now = Date.now();
+		const then = new Date(dateStr).getTime();
+		const diffMs = now - then;
+		const minutes = Math.floor(diffMs / 60000);
+		if (minutes < 1) return 'just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	}
 
-  function handleResume(e: MouseEvent) {
-    e.stopPropagation();
-    resumeSession(issue.id);
-  }
+	function handleClick() {
+		selectedIssue.set(issue);
+	}
 
-  let isActive = $derived(
-    issue.sessionState === "in-progress" || issue.sessionState === "initializing"
-  );
-  let isDraggable = $derived(!isActive);
+	function handleTest(e: MouseEvent) {
+		e.stopPropagation();
+		if (session) {
+			backend.runTest(session.id);
+		}
+	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="group w-full cursor-pointer rounded-lg border border-border bg-card p-3 text-left transition-all hover:border-muted-foreground/30"
-  class:cursor-grab={isDraggable}
-  class:cursor-not-allowed={!isDraggable}
-  draggable={isDraggable}
-  ondragstart={handleDragStart}
-  onclick={() => setSelectedIssue(issue)}
-  onkeydown={(e) => { if (e.key === 'Enter') setSelectedIssue(issue); }}
-  role="button"
-  tabindex={0}
+	class="group rounded-lg border border-border bg-card p-3 shadow-sm hover:shadow-md hover:border-ring/30 transition-all cursor-pointer"
+	role="button"
+	tabindex="0"
+	onclick={handleClick}
+	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick(); }}
 >
-  <!-- Title row -->
-  <div class="flex items-start justify-between gap-2">
-    <h3 class="text-sm font-medium leading-snug text-foreground">{issue.title}</h3>
-    {#if issue.hasError}
-      <span class="mt-0.5 shrink-0 rounded-full bg-red-500/20 p-1">
-        <AlertCircle size={12} class="text-red-400" />
-      </span>
-    {/if}
-  </div>
+	<div class="flex items-start justify-between gap-2 mb-1.5">
+		<h4 class="text-sm font-medium text-card-foreground leading-snug line-clamp-2 flex-1">
+			{issue.title}
+		</h4>
+		{#if column === 'blocked'}
+			<span class="shrink-0 mt-0.5 h-2.5 w-2.5 rounded-full bg-orange-500 animate-pulse" title="Blocked"></span>
+		{/if}
+		{#if hasError}
+			<span class="shrink-0 mt-0.5" title={session?.error_message ?? 'Error'}>
+				<AlertCircle class="h-4 w-4 text-red-500" />
+			</span>
+		{/if}
+	</div>
 
-  <!-- Meta row -->
-  <div class="mt-2 flex items-center justify-between">
-    <div class="flex items-center gap-2">
-      <span class="text-xs text-muted-foreground">#{issue.number}</span>
+	<div class="flex items-center justify-between gap-2">
+		<div class="flex items-center gap-2 min-w-0">
+			<span class="text-xs text-muted-foreground">#{issue.number}</span>
+			{#if session}
+				<span class="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+					{session.stage}
+				</span>
+			{/if}
+		</div>
 
-      {#if issue.stage && issue.column !== "done"}
-        <span class="flex items-center gap-1 rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-secondary-foreground">
-          {#if issue.sessionState === "in-progress"}
-            <Loader size={10} class="animate-spin" />
-          {/if}
-          {#if issue.sessionState === "initializing"}
-            <Loader size={10} class="animate-spin text-yellow-400" />
-          {/if}
-          {stageLabel(issue.stage)}
-        </span>
-      {/if}
-
-      {#if issue.column === "blocked"}
-        <span class="pulse-dot h-2 w-2 rounded-full bg-orange-400"></span>
-      {/if}
-    </div>
-
-    <div class="flex items-center gap-2">
-      {#if isActive}
-        <button
-          onclick={handleStop}
-          class="rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/20 hover:text-red-400 group-hover:opacity-100"
-          title="Stop session"
-        >
-          <Square size={12} />
-        </button>
-      {/if}
-
-      {#if issue.sessionState === "canceled"}
-        <button
-          onclick={handleResume}
-          class="rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-accent hover:text-green-400 group-hover:opacity-100"
-          title="Resume session"
-        >
-          <Play size={12} />
-        </button>
-      {/if}
-
-      <span class="text-[10px] text-muted-foreground">{timeAgo(issue.updatedAt)}</span>
-
-      {#if issue.assignee}
-        <img
-          src={issue.assignee.avatarUrl}
-          alt={issue.assignee.login}
-          class="h-5 w-5 rounded-full"
-        />
-      {/if}
-    </div>
-  </div>
+		<div class="flex items-center gap-2 shrink-0">
+			{#if column === 'review' && session}
+				<button
+					class="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-600 hover:bg-green-500 text-white transition-colors"
+					onclick={handleTest}
+				>
+					<Play class="h-3 w-3" />
+					Test
+				</button>
+			{/if}
+			<span class="text-xs text-muted-foreground">{timeAgo(issue.updated_at)}</span>
+			{#if issue.assignee}
+				<img
+					src={issue.assignee.avatar_url}
+					alt={issue.assignee.login}
+					class="h-5 w-5 rounded-full ring-1 ring-border"
+				/>
+			{/if}
+		</div>
+	</div>
 </div>
