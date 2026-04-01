@@ -1,0 +1,551 @@
+use rusqlite::{Connection, params};
+
+use crate::types::{AgentPrompt, AppSettings, RepoConfig, Session, SessionLogEntry};
+
+/// Get the database path (~/.autodev/autodev.db), creating the directory if needed.
+pub fn db_path() -> Result<std::path::PathBuf, String> {
+    let home = dirs_fallback()?;
+    let dir = home.join(".autodev");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create ~/.autodev: {e}"))?;
+    Ok(dir.join("autodev.db"))
+}
+
+fn dirs_fallback() -> Result<std::path::PathBuf, String> {
+    std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .map_err(|_| "HOME environment variable not set".to_string())
+}
+
+/// Open (or create) the database and run migrations.
+pub fn open_and_init() -> Result<Connection, String> {
+    let path = db_path()?;
+    let conn = Connection::open(&path).map_err(|e| format!("Failed to open DB: {e}"))?;
+
+    // Enable WAL mode for better concurrency
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
+
+    create_tables(&conn)?;
+    seed_default_prompts(&conn)?;
+    Ok(conn)
+}
+
+fn create_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repos (
+            id INTEGER PRIMARY KEY,
+            github_id INTEGER,
+            owner TEXT NOT NULL,
+            name TEXT NOT NULL,
+            setup_script TEXT NOT NULL DEFAULT '',
+            run_script TEXT NOT NULL DEFAULT '',
+            base_branch TEXT NOT NULL DEFAULT 'main',
+            branch_prefix TEXT NOT NULL DEFAULT 'autodev/',
+            worktree_dir TEXT NOT NULL DEFAULT '.worktrees/',
+            added_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY,
+            repo_id INTEGER NOT NULL REFERENCES repos(id),
+            issue_number INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            worktree_path TEXT,
+            session_id TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            error_message TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS auth (
+            id INTEGER PRIMARY KEY,
+            provider TEXT NOT NULL,
+            token TEXT NOT NULL,
+            username TEXT,
+            expires_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_prompts (
+            id INTEGER PRIMARY KEY,
+            stage TEXT NOT NULL UNIQUE,
+            prompt_text TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS session_logs (
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            timestamp TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            content TEXT NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| format!("Failed to create tables: {e}"))
+}
+
+fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
+    let defaults: &[(&str, &str)] = &[
+        (
+            "spec",
+            "You are an AI developer working on a GitHub issue. Read the issue carefully, \
+             explore the codebase to understand the relevant code, and then write a specification \
+             comment on the issue. Include: relevant files, proposed approach, and any questions \
+             you have. If you have no questions, say so clearly.",
+        ),
+        (
+            "implement",
+            "You are an AI developer implementing a feature based on the spec below. \
+             Write clean, well-tested code. Follow the existing code style and conventions. \
+             Run any existing tests to make sure you haven't broken anything.",
+        ),
+        (
+            "review",
+            "You are reviewing a diff for quality, correctness, and completeness. \
+             Check for bugs, missing edge cases, style issues, and test coverage. \
+             If you find issues, fix them directly. Then provide test instructions \
+             for a human reviewer.",
+        ),
+        (
+            "ci_fix",
+            "CI has failed on this PR. Analyze the failure output and fix the issues. \
+             Run the tests locally to verify your fix before pushing.",
+        ),
+        (
+            "merge_conflict",
+            "This PR has merge conflicts. Resolve them while preserving the intent \
+             of both the PR changes and the base branch changes. Run tests after resolving.",
+        ),
+    ];
+
+    for (stage, prompt) in defaults {
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_prompts (stage, prompt_text, is_default) VALUES (?1, ?2, 1)",
+            params![stage, prompt],
+        )
+        .map_err(|e| format!("Failed to seed prompt for {stage}: {e}"))?;
+    }
+
+    Ok(())
+}
+
+// ── Auth ────────────────────────────────────────────────────────────────
+
+pub fn save_auth_token(conn: &Connection, token: &str, username: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO auth (id, provider, token, username) VALUES (1, 'github', ?1, ?2)",
+        params![token, username],
+    )
+    .map_err(|e| format!("Failed to save auth: {e}"))?;
+    Ok(())
+}
+
+pub fn get_auth_token(conn: &Connection) -> Result<Option<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT token, username FROM auth WHERE provider = 'github' LIMIT 1")
+        .map_err(|e| format!("Failed to query auth: {e}"))?;
+
+    let result = stmt
+        .query_row([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        });
+
+    match result {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read auth: {e}")),
+    }
+}
+
+pub fn delete_auth(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM auth WHERE provider = 'github'", [])
+        .map_err(|e| format!("Failed to delete auth: {e}"))?;
+    Ok(())
+}
+
+// ── Repos ───────────────────────────────────────────────────────────────
+
+pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO repos (github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            repo.github_id,
+            repo.owner,
+            repo.name,
+            repo.setup_script,
+            repo.run_script,
+            repo.base_branch,
+            repo.branch_prefix,
+            repo.worktree_dir,
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    )
+    .map_err(|e| format!("Failed to insert repo: {e}"))?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn delete_repo(conn: &Connection, repo_id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM repos WHERE id = ?1", params![repo_id])
+        .map_err(|e| format!("Failed to delete repo: {e}"))?;
+    Ok(())
+}
+
+pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos",
+        )
+        .map_err(|e| format!("Failed to query repos: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let owner: String = row.get(2)?;
+            let name: String = row.get(3)?;
+            Ok(RepoConfig {
+                id: row.get(0)?,
+                github_id: row.get(1)?,
+                owner: owner.clone(),
+                name: name.clone(),
+                full_name: format!("{owner}/{name}"),
+                setup_script: row.get(4)?,
+                run_script: row.get(5)?,
+                base_branch: row.get(6)?,
+                branch_prefix: row.get(7)?,
+                worktree_dir: row.get(8)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query repos: {e}"))?;
+
+    let mut repos = Vec::new();
+    for row in rows {
+        repos.push(row.map_err(|e| format!("Failed to read repo row: {e}"))?);
+    }
+    Ok(repos)
+}
+
+pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConfig>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos WHERE id = ?1",
+        )
+        .map_err(|e| format!("Failed to query repo: {e}"))?;
+
+    let result = stmt.query_row(params![repo_id], |row| {
+        let owner: String = row.get(2)?;
+        let name: String = row.get(3)?;
+        Ok(RepoConfig {
+            id: row.get(0)?,
+            github_id: row.get(1)?,
+            owner: owner.clone(),
+            name: name.clone(),
+            full_name: format!("{owner}/{name}"),
+            setup_script: row.get(4)?,
+            run_script: row.get(5)?,
+            base_branch: row.get(6)?,
+            branch_prefix: row.get(7)?,
+            worktree_dir: row.get(8)?,
+        })
+    });
+
+    match result {
+        Ok(repo) => Ok(Some(repo)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read repo: {e}")),
+    }
+}
+
+pub fn update_repo(conn: &Connection, repo: &RepoConfig) -> Result<(), String> {
+    conn.execute(
+        "UPDATE repos SET setup_script = ?1, run_script = ?2, base_branch = ?3, branch_prefix = ?4, worktree_dir = ?5 WHERE id = ?6",
+        params![
+            repo.setup_script,
+            repo.run_script,
+            repo.base_branch,
+            repo.branch_prefix,
+            repo.worktree_dir,
+            repo.id,
+        ],
+    )
+    .map_err(|e| format!("Failed to update repo: {e}"))?;
+    Ok(())
+}
+
+// ── Sessions ────────────────────────────────────────────────────────────
+
+pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO sessions (repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            session.repo_id,
+            session.issue_number,
+            session.stage,
+            session.worktree_path,
+            session.session_id,
+            session.status,
+            session.error_message,
+            session.started_at,
+            session.completed_at,
+        ],
+    )
+    .map_err(|e| format!("Failed to insert session: {e}"))?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_session_status(
+    conn: &Connection,
+    session_db_id: i64,
+    status: &str,
+    error_message: Option<&str>,
+) -> Result<(), String> {
+    let completed_at = if status == "completed" || status == "failed" {
+        Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
+    };
+
+    conn.execute(
+        "UPDATE sessions SET status = ?1, error_message = ?2, completed_at = ?3 WHERE id = ?4",
+        params![status, error_message, completed_at, session_db_id],
+    )
+    .map_err(|e| format!("Failed to update session: {e}"))?;
+    Ok(())
+}
+
+pub fn get_active_session(
+    conn: &Connection,
+    repo_id: i64,
+    issue_number: i64,
+) -> Result<Option<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status = 'running'
+             ORDER BY started_at DESC LIMIT 1",
+        )
+        .map_err(|e| format!("Failed to query session: {e}"))?;
+
+    let result = stmt.query_row(params![repo_id, issue_number], |row| {
+        Ok(Session {
+            id: format!("{}", row.get::<_, i64>(0)?),
+            repo_id: row.get(1)?,
+            issue_number: row.get(2)?,
+            stage: row.get(3)?,
+            worktree_path: row.get(4)?,
+            session_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            started_at: row.get(8)?,
+            completed_at: row.get(9)?,
+        })
+    });
+
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read session: {e}")),
+    }
+}
+
+pub fn get_latest_session(
+    conn: &Connection,
+    repo_id: i64,
+    issue_number: i64,
+) -> Result<Option<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2
+             ORDER BY started_at DESC LIMIT 1",
+        )
+        .map_err(|e| format!("Failed to query session: {e}"))?;
+
+    let result = stmt.query_row(params![repo_id, issue_number], |row| {
+        Ok(Session {
+            id: format!("{}", row.get::<_, i64>(0)?),
+            repo_id: row.get(1)?,
+            issue_number: row.get(2)?,
+            stage: row.get(3)?,
+            worktree_path: row.get(4)?,
+            session_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            started_at: row.get(8)?,
+            completed_at: row.get(9)?,
+        })
+    });
+
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read session: {e}")),
+    }
+}
+
+// ── Session Logs ────────────────────────────────────────────────────────
+
+pub fn insert_session_log(
+    conn: &Connection,
+    session_db_id: i64,
+    event_type: &str,
+    content: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO session_logs (session_id, timestamp, event_type, content) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            session_db_id,
+            chrono::Utc::now().to_rfc3339(),
+            event_type,
+            content,
+        ],
+    )
+    .map_err(|e| format!("Failed to insert session log: {e}"))?;
+    Ok(())
+}
+
+pub fn get_session_logs(
+    conn: &Connection,
+    session_db_id: i64,
+) -> Result<Vec<SessionLogEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, timestamp, event_type, content FROM session_logs WHERE session_id = ?1 ORDER BY timestamp ASC",
+        )
+        .map_err(|e| format!("Failed to query session logs: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![session_db_id], |row| {
+            Ok(SessionLogEntry {
+                id: format!("{}", row.get::<_, i64>(0)?),
+                session_id: format!("{}", row.get::<_, i64>(1)?),
+                timestamp: row.get(2)?,
+                event_type: row.get(3)?,
+                content: row.get(4)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query session logs: {e}"))?;
+
+    let mut logs = Vec::new();
+    for row in rows {
+        logs.push(row.map_err(|e| format!("Failed to read log row: {e}"))?);
+    }
+    Ok(logs)
+}
+
+// ── Settings ────────────────────────────────────────────────────────────
+
+pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM settings WHERE key = ?1")
+        .map_err(|e| format!("Failed to query setting: {e}"))?;
+
+    let result = stmt.query_row(params![key], |row| row.get::<_, String>(0));
+
+    match result {
+        Ok(val) => Ok(Some(val)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read setting: {e}")),
+    }
+}
+
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )
+    .map_err(|e| format!("Failed to set setting: {e}"))?;
+    Ok(())
+}
+
+pub fn get_app_settings(conn: &Connection) -> Result<AppSettings, String> {
+    let defaults = AppSettings::default();
+
+    let sleep = get_setting(conn, "sleep_prevention")?
+        .map(|v| v == "true")
+        .unwrap_or(defaults.sleep_prevention);
+    let notif = get_setting(conn, "notifications_enabled")?
+        .map(|v| v == "true")
+        .unwrap_or(defaults.notifications_enabled);
+    let poll = get_setting(conn, "poll_interval_seconds")?
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(defaults.poll_interval_seconds);
+
+    Ok(AppSettings {
+        sleep_prevention: sleep,
+        notifications_enabled: notif,
+        poll_interval_seconds: poll,
+    })
+}
+
+pub fn save_app_settings(conn: &Connection, settings: &AppSettings) -> Result<(), String> {
+    set_setting(conn, "sleep_prevention", &settings.sleep_prevention.to_string())?;
+    set_setting(conn, "notifications_enabled", &settings.notifications_enabled.to_string())?;
+    set_setting(conn, "poll_interval_seconds", &settings.poll_interval_seconds.to_string())?;
+    Ok(())
+}
+
+// ── Agent Prompts ───────────────────────────────────────────────────────
+
+pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
+    let mut stmt = conn
+        .prepare("SELECT stage, prompt_text, is_default FROM agent_prompts")
+        .map_err(|e| format!("Failed to query prompts: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AgentPrompt {
+                stage: row.get(0)?,
+                prompt_text: row.get(1)?,
+                is_default: row.get::<_, i32>(2)? != 0,
+            })
+        })
+        .map_err(|e| format!("Failed to query prompts: {e}"))?;
+
+    let mut prompts = Vec::new();
+    for row in rows {
+        prompts.push(row.map_err(|e| format!("Failed to read prompt row: {e}"))?);
+    }
+    Ok(prompts)
+}
+
+pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>, String> {
+    let mut stmt = conn
+        .prepare("SELECT stage, prompt_text, is_default FROM agent_prompts WHERE stage = ?1")
+        .map_err(|e| format!("Failed to query prompt: {e}"))?;
+
+    let result = stmt.query_row(params![stage], |row| {
+        Ok(AgentPrompt {
+            stage: row.get(0)?,
+            prompt_text: row.get(1)?,
+            is_default: row.get::<_, i32>(2)? != 0,
+        })
+    });
+
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read prompt: {e}")),
+    }
+}
+
+pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 0 WHERE stage = ?2",
+        params![prompt_text, stage],
+    )
+    .map_err(|e| format!("Failed to update prompt: {e}"))?;
+    Ok(())
+}
