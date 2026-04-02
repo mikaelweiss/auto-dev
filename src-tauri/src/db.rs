@@ -26,6 +26,7 @@ pub fn open_and_init() -> Result<Connection, String> {
         .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
 
     create_tables(&conn)?;
+    run_migrations(&conn)?;
     seed_default_prompts(&conn)?;
     Ok(conn)
 }
@@ -89,6 +90,50 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))
+}
+
+fn run_migrations(conn: &Connection) -> Result<(), String> {
+    // Migration: relax CHECK constraints on sessions.status to allow 'initializing' and 'setup'.
+    // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+    // Only runs if the old constraint exists.
+    let needs_migration: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("CHECK(status IN ('running', 'completed', 'failed'))"))
+        .unwrap_or(false);
+
+    if needs_migration {
+        eprintln!("[DB] Migrating sessions table: relaxing status CHECK constraint");
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions_new (
+                id INTEGER PRIMARY KEY,
+                repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+                issue_number INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                worktree_path TEXT,
+                session_id TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                error_message TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO sessions_new (id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at)
+                SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+            CREATE INDEX IF NOT EXISTS idx_sessions_repo_issue ON sessions(repo_id, issue_number);
+            ",
+        )
+        .map_err(|e| format!("Failed to migrate sessions table: {e}"))?;
+        eprintln!("[DB] Migration complete");
+    }
+
+    Ok(())
 }
 
 fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
