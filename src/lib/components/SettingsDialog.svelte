@@ -11,7 +11,8 @@
 	let localSettings = $state<AppSettings>({
 		sleep_prevention: true,
 		notifications_enabled: true,
-		poll_interval_seconds: 15
+		poll_interval_seconds: 15,
+		bypass_permissions: false
 	});
 
 	// Local copies of prompts
@@ -172,6 +173,33 @@
 								class="w-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
 								bind:value={localSettings.poll_interval_seconds}
 							/>
+						</div>
+					</div>
+
+					<div class="border-t border-border pt-4 mt-4 space-y-3">
+						<div>
+							<p class="text-sm font-medium text-foreground">Agent Permissions</p>
+							<p class="text-xs text-muted-foreground">Controls how much autonomy agents have when running tasks</p>
+						</div>
+
+						<div class="flex items-center justify-between">
+							<div>
+								<p class="text-sm font-medium text-foreground">Bypass All Permissions</p>
+								<p class="text-xs text-muted-foreground">
+									{#if localSettings.bypass_permissions}
+										Agents run with no permission checks. Use only in trusted repos.
+									{:else}
+										Agents use auto mode — an AI classifier approves safe actions.
+									{/if}
+								</p>
+							</div>
+							<Switch.Root
+								checked={localSettings.bypass_permissions}
+								onCheckedChange={(checked) => { localSettings.bypass_permissions = checked; }}
+								class="relative h-5 w-9 rounded-full bg-muted transition-colors data-[state=checked]:bg-destructive"
+							>
+								<Switch.Thumb class="block h-4 w-4 rounded-full bg-background shadow-sm transition-transform data-[state=checked]:translate-x-4 translate-x-0.5" />
+							</Switch.Root>
 						</div>
 					</div>
 
