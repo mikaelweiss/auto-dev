@@ -43,7 +43,6 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
             run_script TEXT NOT NULL DEFAULT '',
             base_branch TEXT NOT NULL DEFAULT 'main',
             branch_prefix TEXT NOT NULL DEFAULT 'autodev/',
-            worktree_dir TEXT NOT NULL DEFAULT '.worktrees/',
             added_at TEXT NOT NULL
         );
 
@@ -273,8 +272,8 @@ pub fn delete_auth(conn: &Connection) -> Result<(), String> {
 
 pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO repos (github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO repos (github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             repo.github_id,
             repo.owner,
@@ -283,7 +282,6 @@ pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> 
             repo.run_script,
             repo.base_branch,
             repo.branch_prefix,
-            repo.worktree_dir,
             chrono::Utc::now().to_rfc3339(),
         ],
     )
@@ -366,7 +364,7 @@ pub fn delete_repo_cascade(conn: &Connection, repo_id: i64) -> Result<(), String
 pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos",
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix FROM repos",
         )
         .map_err(|e| format!("Failed to query repos: {e}"))?;
 
@@ -384,7 +382,6 @@ pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
                 run_script: row.get(5)?,
                 base_branch: row.get(6)?,
                 branch_prefix: row.get(7)?,
-                worktree_dir: row.get(8)?,
             })
         })
         .map_err(|e| format!("Failed to query repos: {e}"))?;
@@ -399,7 +396,7 @@ pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
 pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos WHERE id = ?1",
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix FROM repos WHERE id = ?1",
         )
         .map_err(|e| format!("Failed to query repo: {e}"))?;
 
@@ -416,7 +413,6 @@ pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConf
             run_script: row.get(5)?,
             base_branch: row.get(6)?,
             branch_prefix: row.get(7)?,
-            worktree_dir: row.get(8)?,
         })
     });
 
@@ -429,13 +425,12 @@ pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConf
 
 pub fn update_repo(conn: &Connection, repo: &RepoConfig) -> Result<(), String> {
     conn.execute(
-        "UPDATE repos SET setup_script = ?1, run_script = ?2, base_branch = ?3, branch_prefix = ?4, worktree_dir = ?5 WHERE id = ?6",
+        "UPDATE repos SET setup_script = ?1, run_script = ?2, base_branch = ?3, branch_prefix = ?4 WHERE id = ?5",
         params![
             repo.setup_script,
             repo.run_script,
             repo.base_branch,
             repo.branch_prefix,
-            repo.worktree_dir,
             repo.id,
         ],
     )
