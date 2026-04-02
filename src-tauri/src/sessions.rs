@@ -867,6 +867,11 @@ fn update_status_via_app(
     let state = app.state::<AppState>();
     let Ok(db) = state.db.lock() else { return };
     let _ = db::update_session_status(&db, session_db_id, status, error);
+
+    // Re-read the session and emit to frontend so the UI updates
+    if let Ok(Some(session)) = db::get_session_by_id(&db, session_db_id) {
+        let _ = app.emit("session-status", &session);
+    }
 }
 
 fn insert_log_via_app(
@@ -999,6 +1004,7 @@ async fn run_claude_session(
     let mut child = tokio::process::Command::new(claude_path)
         .args([
             "-p",
+            "--verbose",
             "--output-format",
             "stream-json",
             "--permission-mode",
@@ -1017,6 +1023,7 @@ async fn run_claude_session(
         .stdout
         .take()
         .ok_or("Failed to capture claude stdout")?;
+    let stderr = child.stderr.take();
 
     let mut reader = BufReader::new(stdout).lines();
     let mut full_output = String::new();
@@ -1059,8 +1066,20 @@ async fn run_claude_session(
         .map_err(|e| format!("Failed to wait for claude: {e}"))?;
 
     if !status.success() {
-        // Read stderr for error details
-        return Err(format!("Claude exited with status {status}"));
+        let mut stderr_output = String::new();
+        if let Some(stderr) = stderr {
+            let mut stderr_reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = stderr_reader.next_line().await {
+                stderr_output.push_str(&line);
+                stderr_output.push('\n');
+            }
+        }
+        let detail = if stderr_output.trim().is_empty() {
+            format!("Claude exited with {status}")
+        } else {
+            format!("Claude exited with {status}: {}", stderr_output.trim())
+        };
+        return Err(detail);
     }
 
     Ok(full_output)

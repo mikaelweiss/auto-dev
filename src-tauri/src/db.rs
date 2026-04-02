@@ -551,6 +551,36 @@ pub fn get_latest_session(
     }
 }
 
+pub fn get_session_by_id(conn: &Connection, session_id: i64) -> Result<Option<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions WHERE id = ?1",
+        )
+        .map_err(|e| format!("Failed to query session: {e}"))?;
+
+    let result = stmt.query_row(params![session_id], |row| {
+        Ok(Session {
+            id: format!("{}", row.get::<_, i64>(0)?),
+            repo_id: row.get(1)?,
+            issue_number: row.get(2)?,
+            stage: row.get(3)?,
+            worktree_path: row.get(4)?,
+            session_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            started_at: row.get(8)?,
+            completed_at: row.get(9)?,
+        })
+    });
+
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read session: {e}")),
+    }
+}
+
 pub fn get_all_sessions(conn: &Connection) -> Result<Vec<Session>, String> {
     let mut stmt = conn
         .prepare(

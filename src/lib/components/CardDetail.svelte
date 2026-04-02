@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { selectedIssue } from '$lib/stores/ui';
-	import { sessionByIssue, sessions } from '$lib/stores/sessions';
+	import { sessionsByIssue } from '$lib/stores/sessions';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import { getColumnForIssue } from '$lib/types';
-	import { X, ExternalLink, Play, GitMerge, Send } from 'lucide-svelte';
+	import type { Session } from '$lib/types';
+	import { X, ExternalLink, Play, GitMerge, Send, Plus } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 
 	let issue = $derived($selectedIssue);
@@ -14,18 +15,27 @@
 		issue ? $repos.find((r) => r.owner === issue!.repo_owner && r.name === issue!.repo_name) : null
 	);
 	let sessionKey = $derived(repoConfig && issue ? `${repoConfig.id}:${issue.number}` : null);
-	let session = $derived(sessionKey ? $sessionByIssue.get(sessionKey) ?? null : null);
+	let allSessions = $derived(sessionKey ? $sessionsByIssue.get(sessionKey) ?? [] : []);
 	let column = $derived(issue ? getColumnForIssue(issue) : null);
 
-	let editingTitle = $state(false);
-	let titleDraft = $state('');
-	let editingBody = $state(false);
-	let bodyDraft = $state('');
-	let blockResponse = $state('');
+	let selectedSessionId: string | null = $state(null);
 
-	// Reset editing state when issue changes
+	// Auto-select the most recent session, or follow new sessions as they appear
+	$effect(() => {
+		if (allSessions.length > 0) {
+			const ids = new Set(allSessions.map((s) => s.id));
+			if (!selectedSessionId || !ids.has(selectedSessionId)) {
+				selectedSessionId = allSessions[0].id;
+			}
+		} else {
+			selectedSessionId = null;
+		}
+	});
+
+	// Reset when issue changes
 	$effect(() => {
 		if (issue) {
+			selectedSessionId = null;
 			editingTitle = false;
 			editingBody = false;
 			titleDraft = issue.title;
@@ -33,6 +43,16 @@
 			blockResponse = '';
 		}
 	});
+
+	let activeSession: Session | null = $derived(
+		allSessions.find((s) => s.id === selectedSessionId) ?? null
+	);
+
+	let editingTitle = $state(false);
+	let titleDraft = $state('');
+	let editingBody = $state(false);
+	let bodyDraft = $state('');
+	let blockResponse = $state('');
 
 	function close() {
 		selectedIssue.set(null);
@@ -61,9 +81,25 @@
 		return `${hours}h ${remainingMin}m`;
 	}
 
+	function statusDotClass(status: string): string {
+		switch (status) {
+			case 'running':
+				return 'bg-green-500 animate-pulse';
+			case 'initializing':
+			case 'setup':
+				return 'bg-yellow-500 animate-pulse';
+			case 'failed':
+				return 'bg-red-500';
+			case 'completed':
+				return 'bg-green-500';
+			default:
+				return 'bg-muted-foreground';
+		}
+	}
+
 	function handleTest() {
-		if (session) {
-			backend.runTest(session.id);
+		if (activeSession) {
+			backend.runTest(activeSession.id);
 		}
 	}
 
@@ -77,9 +113,15 @@
 	}
 
 	function handleRespond() {
-		if (session && blockResponse.trim()) {
-			backend.respondToSession(session.id, blockResponse.trim());
+		if (activeSession && blockResponse.trim()) {
+			backend.respondToSession(activeSession.id, blockResponse.trim());
 			blockResponse = '';
+		}
+	}
+
+	function handleNewSession() {
+		if (repoConfig && issue) {
+			backend.startSession(repoConfig.id, issue.number);
 		}
 	}
 
@@ -162,29 +204,6 @@
 					{/if}
 				</div>
 
-				<!-- Session info -->
-				{#if session}
-					<div class="space-y-2">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Session</h3>
-						<div class="bg-muted rounded-lg p-3 space-y-1.5">
-							<div class="flex items-center justify-between">
-								<span class="text-sm text-foreground">Stage: <span class="font-medium">{session.stage}</span></span>
-								<span class="text-xs px-2 py-0.5 rounded-full {session.status === 'running' ? 'bg-green-500/20 text-green-400' : session.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-muted-foreground/20 text-muted-foreground'}">
-									{session.status}
-								</span>
-							</div>
-							<div class="text-xs text-muted-foreground">
-								Elapsed: {elapsedTime(session.started_at, session.completed_at)}
-							</div>
-							{#if session.error_message}
-								<div class="text-sm text-red-400 bg-red-500/10 rounded p-2 mt-1">
-									{session.error_message}
-								</div>
-							{/if}
-						</div>
-					</div>
-				{/if}
-
 				<!-- Body -->
 				<div class="space-y-2">
 					<div class="flex items-center justify-between">
@@ -208,60 +227,114 @@
 					{/if}
 				</div>
 
-				<!-- Blocked response -->
-				{#if column === 'blocked' && session}
-					<div class="space-y-2">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-orange-400">Blocked - Respond</h3>
-						<div class="flex gap-2">
-							<input
-								class="flex-1 bg-muted rounded-lg px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
-								placeholder="Type a response..."
-								bind:value={blockResponse}
-								onkeydown={(e) => { if (e.key === 'Enter') handleRespond(); }}
-							/>
-							<button
-								class="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-								onclick={handleRespond}
-								disabled={!blockResponse.trim()}
-							>
-								<Send class="h-4 w-4" />
-							</button>
-						</div>
+				<!-- Session tabs -->
+				<div class="space-y-2 flex flex-col flex-1 min-h-[200px]">
+					<div class="flex items-center justify-between">
+						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sessions</h3>
+						<button
+							class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+							onclick={handleNewSession}
+							title="Start new session"
+						>
+							<Plus class="h-3.5 w-3.5" />
+							New
+						</button>
 					</div>
-				{/if}
 
-				<!-- Review actions -->
-				{#if column === 'review' && session}
-					<div class="space-y-2">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h3>
-						<div class="flex gap-2">
-							<button
-								class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
-								onclick={handleTest}
-							>
-								<Play class="h-4 w-4" />
-								Test
-							</button>
-							{#if issue.pull_request}
+					{#if allSessions.length > 0}
+						<!-- Tab bar -->
+						<div class="flex gap-1 overflow-x-auto pb-1">
+							{#each allSessions as sess, i (sess.id)}
 								<button
-									class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
-									onclick={handleMerge}
+									class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
+										{sess.id === selectedSessionId
+											? 'bg-muted text-foreground'
+											: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
+									onclick={() => { selectedSessionId = sess.id; }}
 								>
-									<GitMerge class="h-4 w-4" />
-									Merge
+									<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
+									{sess.stage}{allSessions.filter((s) => s.stage === sess.stage).length > 1
+										? ` #${allSessions.filter((s) => s.stage === sess.stage).indexOf(sess) + 1}`
+										: ''}
 								</button>
-							{/if}
+							{/each}
 						</div>
-					</div>
-				{/if}
 
-				<!-- Activity log -->
-				{#if session}
-					<div class="space-y-2 flex flex-col min-h-[200px]">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Activity</h3>
-						<AgentLog sessionId={session.id} />
-					</div>
-				{/if}
+						<!-- Active session detail -->
+						{#if activeSession}
+							<div class="bg-muted rounded-lg p-3 space-y-1.5">
+								<div class="flex items-center justify-between">
+									<span class="text-sm text-foreground">Stage: <span class="font-medium">{activeSession.stage}</span></span>
+									<span class="text-xs px-2 py-0.5 rounded-full {activeSession.status === 'running' ? 'bg-green-500/20 text-green-400' : activeSession.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-muted-foreground/20 text-muted-foreground'}">
+										{activeSession.status}
+									</span>
+								</div>
+								<div class="text-xs text-muted-foreground">
+									Elapsed: {elapsedTime(activeSession.started_at, activeSession.completed_at)}
+								</div>
+								{#if activeSession.error_message}
+									<div class="text-sm text-red-400 bg-red-500/10 rounded p-2 mt-1">
+										{activeSession.error_message}
+									</div>
+								{/if}
+							</div>
+
+							<!-- Blocked response -->
+							{#if column === 'blocked'}
+								<div class="space-y-2">
+									<h3 class="text-xs font-medium uppercase tracking-wider text-orange-400">Blocked - Respond</h3>
+									<div class="flex gap-2">
+										<input
+											class="flex-1 bg-muted rounded-lg px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
+											placeholder="Type a response..."
+											bind:value={blockResponse}
+											onkeydown={(e) => { if (e.key === 'Enter') handleRespond(); }}
+										/>
+										<button
+											class="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+											onclick={handleRespond}
+											disabled={!blockResponse.trim()}
+										>
+											<Send class="h-4 w-4" />
+										</button>
+									</div>
+								</div>
+							{/if}
+
+							<!-- Review actions -->
+							{#if column === 'review'}
+								<div class="space-y-2">
+									<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h3>
+									<div class="flex gap-2">
+										<button
+											class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
+											onclick={handleTest}
+										>
+											<Play class="h-4 w-4" />
+											Test
+										</button>
+										{#if issue.pull_request}
+											<button
+												class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
+												onclick={handleMerge}
+											>
+												<GitMerge class="h-4 w-4" />
+												Merge
+											</button>
+										{/if}
+									</div>
+								</div>
+							{/if}
+
+							<!-- Activity log -->
+							<AgentLog sessionId={activeSession.id} />
+						{/if}
+					{:else}
+						<div class="flex items-center justify-center h-full">
+							<p class="text-sm text-muted-foreground">No sessions yet.</p>
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 	</div>
