@@ -3,17 +3,21 @@ use tokio::process::Command;
 
 /// Create a git worktree for an issue.
 /// Returns the path to the new worktree directory.
+/// Worktrees are stored in `~/.autodev/{repo_name}/issue-{number}/`.
 pub async fn create_worktree(
     repo_path: &str,
     issue_number: i64,
     branch_prefix: &str,
-    worktree_dir: &str,
+    repo_name: &str,
     base_branch: &str,
 ) -> Result<String, String> {
     let slug = format!("issue-{issue_number}");
     let branch_name = format!("{branch_prefix}{slug}");
-    let wt_path = Path::new(repo_path)
-        .join(worktree_dir)
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let wt_path = Path::new(&home)
+        .join(".autodev")
+        .join(repo_name)
         .join(&slug);
 
     // Create the worktree directory parent if needed

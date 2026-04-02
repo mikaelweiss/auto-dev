@@ -4,7 +4,11 @@
 	import * as backend from '$lib/stores/backend';
 	import type { GitHubRepo } from '$lib/types';
 	import { FolderGit2, Loader2, Search } from 'lucide-svelte';
+	import { open } from '@tauri-apps/plugin-dialog';
 
+	type Mode = 'github' | 'local';
+
+	let mode = $state<Mode>('github');
 	let filter = $state('');
 	let ghRepos = $state<GitHubRepo[]>([]);
 	let loading = $state(false);
@@ -21,8 +25,10 @@
 
 	$effect(() => {
 		if ($showAddRepo) {
+			mode = 'github';
 			filter = '';
 			error = '';
+			adding = null;
 			loading = true;
 			backend.listUserRepos()
 				.then((list) => { ghRepos = list; })
@@ -31,7 +37,7 @@
 		}
 	});
 
-	async function handleSelect(repo: GitHubRepo) {
+	async function handleSelectGitHub(repo: GitHubRepo) {
 		if (addedSet.has(repo.full_name) || adding) return;
 		adding = repo.full_name;
 		error = '';
@@ -47,11 +53,30 @@
 		}
 	}
 
+	async function handleSelectLocal() {
+		error = '';
+		const result = await open({ directory: true });
+		if (!result) return;
+		adding = result;
+		error = '';
+		try {
+			const added = await backend.addLocalRepo(result);
+			repos.update((list) => [...list, added]);
+			selectRepo(added.id);
+			close();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			adding = null;
+		}
+	}
+
 	function close() {
 		showAddRepo.set(false);
 		filter = '';
 		ghRepos = [];
 		error = '';
+		adding = null;
 	}
 </script>
 
@@ -63,50 +88,92 @@
 		<div class="relative bg-popover border border-border rounded-lg shadow-xl w-96 flex flex-col max-h-[70vh] overflow-hidden">
 			<div class="shrink-0 p-4 pb-3 border-b border-border">
 				<h3 class="text-sm font-semibold text-foreground mb-3">Add Repository</h3>
-				<div class="relative">
-					<Search class="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-					<input
-						class="w-full bg-muted rounded-md pl-9 pr-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
-						placeholder="Filter repositories..."
-						bind:value={filter}
-					/>
+				<div class="flex gap-1 bg-muted rounded-md p-0.5">
+					<button
+						class="flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors {mode === 'github' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+						onclick={() => { mode = 'github'; error = ''; }}
+					>
+						GitHub
+					</button>
+					<button
+						class="flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors {mode === 'local' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+						onclick={() => { mode = 'local'; error = ''; }}
+					>
+						Local
+					</button>
 				</div>
 			</div>
 
-			<div class="flex-1 min-h-0 overflow-y-auto p-1">
-				{#if loading}
-					<div class="flex items-center justify-center py-8 text-muted-foreground">
-						<Loader2 class="h-4 w-4 animate-spin mr-2" />
-						<span class="text-sm">Loading repositories...</span>
+			{#if mode === 'github'}
+				<div class="shrink-0 px-4 pt-3">
+					<div class="relative">
+						<Search class="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+						<input
+							class="w-full bg-muted rounded-md pl-9 pr-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
+							placeholder="Filter repositories..."
+							bind:value={filter}
+						/>
 					</div>
-				{:else if error}
-					<div class="px-3 py-4 text-sm text-red-400">{error}</div>
-				{:else if filtered.length === 0}
-					<div class="px-3 py-4 text-sm text-muted-foreground">
-						{filter.trim() ? 'No matching repositories' : 'No repositories found'}
-					</div>
-				{:else}
-					{#each filtered as repo (repo.id)}
-						{@const alreadyAdded = addedSet.has(repo.full_name)}
-						{@const isAdding = adding === repo.full_name}
+				</div>
+
+				<div class="flex-1 min-h-0 overflow-y-auto p-1">
+					{#if loading}
+						<div class="flex items-center justify-center py-8 text-muted-foreground">
+							<Loader2 class="h-4 w-4 animate-spin mr-2" />
+							<span class="text-sm">Loading repositories...</span>
+						</div>
+					{:else if error}
+						<div class="px-3 py-4 text-sm text-red-400">{error}</div>
+					{:else if filtered.length === 0}
+						<div class="px-3 py-4 text-sm text-muted-foreground">
+							{filter.trim() ? 'No matching repositories' : 'No repositories found'}
+						</div>
+					{:else}
+						{#each filtered as repo (repo.id)}
+							{@const alreadyAdded = addedSet.has(repo.full_name)}
+							{@const isAdding = adding === repo.full_name}
+							<button
+								class="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md text-left transition-colors
+									{alreadyAdded ? 'text-muted-foreground/50 cursor-default' : 'hover:bg-accent hover:text-accent-foreground cursor-pointer text-foreground'}"
+								onclick={() => handleSelectGitHub(repo)}
+								disabled={alreadyAdded || !!adding}
+							>
+								<FolderGit2 class="h-3.5 w-3.5 shrink-0 {alreadyAdded ? 'text-muted-foreground/30' : 'text-muted-foreground'}" />
+								<span class="truncate">{repo.full_name}</span>
+								{#if alreadyAdded}
+									<span class="ml-auto text-xs text-muted-foreground/50 shrink-0">Added</span>
+								{/if}
+								{#if isAdding}
+									<Loader2 class="ml-auto h-3.5 w-3.5 animate-spin shrink-0" />
+								{/if}
+							</button>
+						{/each}
+					{/if}
+				</div>
+			{:else}
+				<div class="flex-1 min-h-0 p-6 flex flex-col items-center justify-center gap-4">
+					{#if adding}
+						<div class="flex flex-col items-center gap-3 py-4">
+							<Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
+							<span class="text-sm text-muted-foreground">Validating repository...</span>
+							<span class="text-xs text-muted-foreground/70 max-w-full truncate px-4">{adding}</span>
+						</div>
+					{:else}
 						<button
-							class="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md text-left transition-colors
-								{alreadyAdded ? 'text-muted-foreground/50 cursor-default' : 'hover:bg-accent hover:text-accent-foreground cursor-pointer text-foreground'}"
-							onclick={() => handleSelect(repo)}
-							disabled={alreadyAdded || !!adding}
+							class="flex flex-col items-center gap-3 py-6 px-8 rounded-lg border border-dashed border-border hover:border-foreground/30 hover:bg-accent transition-colors cursor-pointer w-full"
+							onclick={handleSelectLocal}
 						>
-							<FolderGit2 class="h-3.5 w-3.5 shrink-0 {alreadyAdded ? 'text-muted-foreground/30' : 'text-muted-foreground'}" />
-							<span class="truncate">{repo.full_name}</span>
-							{#if alreadyAdded}
-								<span class="ml-auto text-xs text-muted-foreground/50 shrink-0">Added</span>
-							{/if}
-							{#if isAdding}
-								<Loader2 class="ml-auto h-3.5 w-3.5 animate-spin shrink-0" />
-							{/if}
+							<FolderGit2 class="h-8 w-8 text-muted-foreground" />
+							<span class="text-sm text-foreground font-medium">Select Folder</span>
+							<span class="text-xs text-muted-foreground">Choose a local git repository</span>
 						</button>
-					{/each}
-				{/if}
-			</div>
+					{/if}
+
+					{#if error}
+						<div class="text-sm text-red-400 text-center px-2">{error}</div>
+					{/if}
+				</div>
+			{/if}
 
 			<div class="shrink-0 p-3 border-t border-border flex justify-end">
 				<button

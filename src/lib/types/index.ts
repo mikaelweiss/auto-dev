@@ -70,7 +70,6 @@ export interface RepoConfig {
 	run_script: string;
 	base_branch: string;
 	branch_prefix: string;
-	worktree_dir: string;
 }
 
 export interface RepoRemovalInfo {

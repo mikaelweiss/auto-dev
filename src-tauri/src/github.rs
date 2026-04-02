@@ -184,7 +184,6 @@ pub async fn github_add_repo(
         run_script: String::new(),
         base_branch,
         branch_prefix: "autodev/".to_string(),
-        worktree_dir: ".worktrees/".to_string(),
     };
 
     let repo_id = {
@@ -192,10 +191,146 @@ pub async fn github_add_repo(
         db::insert_repo(&db, &repo)?
     };
 
+    // Clone the repo to ~/.autodev/{name}/ if not already there
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let repo_dir = std::path::Path::new(&home)
+        .join(".autodev")
+        .join(&name);
+
+    if !repo_dir.join(".git").exists() {
+        std::fs::create_dir_all(&repo_dir)
+            .map_err(|e| format!("Failed to create repo directory: {e}"))?;
+
+        let clone_output = tokio::process::Command::new("gh")
+            .args(["repo", "clone", &format!("{owner}/{name}"), repo_dir.to_str().unwrap()])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to clone repo: {e}"))?;
+
+        if !clone_output.status.success() {
+            let stderr = String::from_utf8_lossy(&clone_output.stderr);
+            // Clean up the directory on failure
+            let _ = std::fs::remove_dir_all(&repo_dir);
+            return Err(format!("Failed to clone {owner}/{name}: {stderr}"));
+        }
+    }
+
+    // Store the local path
+    {
+        let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        db::set_setting(&db, &format!("repo_{repo_id}_path"), repo_dir.to_str().unwrap())?;
+    }
+
     // Ensure autodev labels exist on the repo
     ensure_labels(client, &token, &owner, &name).await?;
 
     Ok(RepoConfig { id: repo_id, ..repo })
+}
+
+#[tauri::command]
+pub async fn github_add_local_repo(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<RepoConfig, String> {
+    // Validate .git directory exists
+    let git_dir = std::path::Path::new(&path).join(".git");
+    if !git_dir.exists() {
+        return Err("Selected folder is not a git repository (no .git directory found).".to_string());
+    }
+
+    // Get remote URL
+    let remote_output = tokio::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&path)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to read git remote: {e}"))?;
+
+    if !remote_output.status.success() {
+        return Err("No 'origin' remote found. The repository must have a GitHub remote.".to_string());
+    }
+
+    let remote_url = String::from_utf8_lossy(&remote_output.stdout).trim().to_string();
+    let (owner, name) = parse_github_remote(&remote_url)
+        .ok_or_else(|| format!("Could not parse GitHub owner/name from remote URL: {remote_url}"))?;
+
+    // Fetch repo info from GitHub
+    let token = get_token(&state)?;
+    let client = &state.http_client;
+
+    let resp = client
+        .get(format!("{GITHUB_API}/repos/{owner}/{name}"))
+        .headers(github_headers(&token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch repo from GitHub: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub API error {}: could not find {owner}/{name}",
+            resp.status()
+        ));
+    }
+
+    let gh_repo: GitHubRepo = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse repo response: {e}"))?;
+
+    let base_branch = gh_repo.default_branch.unwrap_or_else(|| "main".to_string());
+
+    let repo = RepoConfig {
+        id: 0,
+        github_id: gh_repo.id,
+        owner: owner.clone(),
+        name: name.clone(),
+        full_name: format!("{owner}/{name}"),
+        setup_script: String::new(),
+        run_script: String::new(),
+        base_branch,
+        branch_prefix: "autodev/".to_string(),
+    };
+
+    let repo_id = {
+        let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        db::insert_repo(&db, &repo)?
+    };
+
+    // Store the local path
+    {
+        let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        db::set_setting(&db, &format!("repo_{repo_id}_path"), &path)?;
+    }
+
+    // Ensure autodev labels exist on the repo
+    ensure_labels(client, &token, &owner, &name).await?;
+
+    Ok(RepoConfig { id: repo_id, ..repo })
+}
+
+/// Parse a GitHub remote URL into (owner, name).
+/// Supports HTTPS and SSH formats.
+fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    // SSH: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        let parts: Vec<&str> = rest.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    // HTTPS: https://github.com/owner/repo.git
+    if url.contains("github.com") {
+        let url = url.strip_suffix(".git").unwrap_or(url);
+        let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+        if parts.len() >= 2 {
+            return Some((parts[1].to_string(), parts[0].to_string()));
+        }
+    }
+
+    None
 }
 
 #[tauri::command]

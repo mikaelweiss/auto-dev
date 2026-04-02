@@ -143,7 +143,6 @@ Each issue gets its own git worktree so multiple issues can run in parallel with
 | Run script | (empty) | Bash run when clicking Test (e.g., `npm run dev`) |
 | Base branch | `main` | Branch to create worktrees from and merge into |
 | Branch prefix | `autodev/` | Prefix for worktree branches |
-| Worktree directory | `.worktrees/` | Directory within the repo for worktrees |
 
 All settings are stored locally in SQLite, not in the repo.
 

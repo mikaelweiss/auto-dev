@@ -43,7 +43,6 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
             run_script TEXT NOT NULL DEFAULT '',
             base_branch TEXT NOT NULL DEFAULT 'main',
             branch_prefix TEXT NOT NULL DEFAULT 'autodev/',
-            worktree_dir TEXT NOT NULL DEFAULT '.worktrees/',
             added_at TEXT NOT NULL
         );
 
@@ -140,33 +139,84 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
     let defaults: &[(&str, &str)] = &[
         (
             "spec",
-            "You are an AI developer working on a GitHub issue. Read the issue carefully, \
-             explore the codebase to understand the relevant code, and then write a specification \
-             comment on the issue. Include: relevant files, proposed approach, and any questions \
-             you have. If you have no questions, say so clearly.",
+            "You are an AI developer analyzing a GitHub issue to produce a specification.\n\n\
+             ## Process\n\
+             1. Read the issue thoroughly — understand the problem, not just the title.\n\
+             2. Explore the codebase to understand the architecture, conventions, and relevant code paths.\n\
+             3. Identify all files that will need to change and any new files that need to be created.\n\
+             4. Write a specification comment on the issue.\n\n\
+             ## Specification format\n\
+             Your spec comment should include:\n\
+             - **Summary**: One-sentence description of what this change does.\n\
+             - **Relevant files**: List every file you expect to touch, with a brief note on what changes.\n\
+             - **Approach**: Step-by-step plan for the implementation. Be specific — reference functions, types, and modules by name.\n\
+             - **Edge cases**: Anything that could go wrong or needs special handling.\n\
+             - **Questions**: If anything is ambiguous, list your questions clearly. If you have no questions, say \"No questions — ready to implement.\"\n\n\
+             ## Rules\n\
+             - Do NOT make any code changes. This is a read-only analysis stage.\n\
+             - Do NOT guess at implementation details you haven't verified by reading the code.\n\
+             - Keep the spec concise and actionable — a developer should be able to implement from it.",
         ),
         (
             "implement",
-            "You are an AI developer implementing a feature based on the spec below. \
-             Write clean, well-tested code. Follow the existing code style and conventions. \
-             Run any existing tests to make sure you haven't broken anything.",
+            "You are an AI developer implementing a feature or fix.\n\n\
+             ## Process\n\
+             1. Read the issue and any spec comments to understand exactly what to build.\n\
+             2. Explore the codebase to understand existing patterns, conventions, and style.\n\
+             3. Implement the changes. Follow the existing code style precisely — match naming, formatting, error handling, and patterns already in use.\n\
+             4. Write tests for your changes if the project has a testing convention. Match the existing test style.\n\
+             5. Run any existing tests or build commands to verify you haven't broken anything.\n\
+             6. Commit your changes with a clear, concise commit message.\n\n\
+             ## Rules\n\
+             - Do the minimum necessary to solve the issue. Do not refactor unrelated code, add unnecessary abstractions, or over-engineer.\n\
+             - Do not add comments, docstrings, or type annotations to code you didn't change.\n\
+             - If the project has a CLAUDE.md or similar configuration, follow its instructions.\n\
+             - If you're unsure about something, implement the simplest reasonable approach rather than guessing at complexity.",
         ),
         (
             "review",
-            "You are reviewing a diff for quality, correctness, and completeness. \
-             Check for bugs, missing edge cases, style issues, and test coverage. \
-             If you find issues, fix them directly. Then provide test instructions \
-             for a human reviewer.",
+            "You are an AI developer reviewing and polishing code before it becomes a PR.\n\n\
+             ## Process\n\
+             1. Review the diff carefully for:\n\
+                - Bugs and logic errors\n\
+                - Missing edge cases or error handling\n\
+                - Style inconsistencies with the rest of the codebase\n\
+                - Test coverage gaps\n\
+                - Security issues (injection, XSS, leaked secrets, etc.)\n\
+             2. Fix any issues you find directly — do not just comment on them.\n\
+             3. Run tests to verify your fixes don't break anything.\n\
+             4. Commit your fixes with clear commit messages.\n\n\
+             ## Rules\n\
+             - Only fix real problems. Do not nitpick style, add comments, or refactor working code.\n\
+             - Do not rewrite the implementation. Fix bugs and gaps, preserve the author's approach.\n\
+             - If the code is clean and correct, say so and move on.",
         ),
         (
             "ci_fix",
-            "CI has failed on this PR. Analyze the failure output and fix the issues. \
-             Run the tests locally to verify your fix before pushing.",
+            "You are an AI developer fixing a CI failure.\n\n\
+             ## Process\n\
+             1. Read the CI failure output carefully. Identify the root cause — don't just fix the symptom.\n\
+             2. Explore the relevant code to understand why the failure occurred.\n\
+             3. Fix the underlying issue.\n\
+             4. Run the failing tests or build locally to verify your fix works.\n\
+             5. Commit your fix with a clear commit message referencing what was broken.\n\n\
+             ## Rules\n\
+             - Fix the root cause, not the symptom. Do not suppress warnings, skip tests, or add workarounds.\n\
+             - Do not change test expectations to match broken behavior.\n\
+             - If the CI failure reveals a real bug in the code, fix the code — not the test.\n\
+             - Keep changes minimal — only fix what's broken.",
         ),
         (
             "merge_conflict",
-            "This PR has merge conflicts. Resolve them while preserving the intent \
-             of both the PR changes and the base branch changes. Run tests after resolving.",
+            "You are an AI developer resolving merge conflicts.\n\n\
+             ## Process\n\
+             1. Understand the intent of BOTH sides — the PR changes and the base branch changes.\n\
+             2. Resolve conflicts by preserving the intent of both sides. If they conflict semantically (not just textually), prefer the PR's intent but incorporate base branch changes.\n\
+             3. Run tests after resolving to make sure nothing is broken.\n\
+             4. Commit the resolution with a clear message.\n\n\
+             ## Rules\n\
+             - Never blindly accept one side. Always understand what both sides were trying to do.\n\
+             - If the conflict is complex or ambiguous, resolve it conservatively and note what you chose and why.",
         ),
     ];
 
@@ -222,8 +272,8 @@ pub fn delete_auth(conn: &Connection) -> Result<(), String> {
 
 pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO repos (github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO repos (github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             repo.github_id,
             repo.owner,
@@ -232,7 +282,6 @@ pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> 
             repo.run_script,
             repo.base_branch,
             repo.branch_prefix,
-            repo.worktree_dir,
             chrono::Utc::now().to_rfc3339(),
         ],
     )
@@ -315,7 +364,7 @@ pub fn delete_repo_cascade(conn: &Connection, repo_id: i64) -> Result<(), String
 pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos",
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix FROM repos",
         )
         .map_err(|e| format!("Failed to query repos: {e}"))?;
 
@@ -333,7 +382,6 @@ pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
                 run_script: row.get(5)?,
                 base_branch: row.get(6)?,
                 branch_prefix: row.get(7)?,
-                worktree_dir: row.get(8)?,
             })
         })
         .map_err(|e| format!("Failed to query repos: {e}"))?;
@@ -348,7 +396,7 @@ pub fn get_all_repos(conn: &Connection) -> Result<Vec<RepoConfig>, String> {
 pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix, worktree_dir FROM repos WHERE id = ?1",
+            "SELECT id, github_id, owner, name, setup_script, run_script, base_branch, branch_prefix FROM repos WHERE id = ?1",
         )
         .map_err(|e| format!("Failed to query repo: {e}"))?;
 
@@ -365,7 +413,6 @@ pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConf
             run_script: row.get(5)?,
             base_branch: row.get(6)?,
             branch_prefix: row.get(7)?,
-            worktree_dir: row.get(8)?,
         })
     });
 
@@ -378,13 +425,12 @@ pub fn get_repo_by_id(conn: &Connection, repo_id: i64) -> Result<Option<RepoConf
 
 pub fn update_repo(conn: &Connection, repo: &RepoConfig) -> Result<(), String> {
     conn.execute(
-        "UPDATE repos SET setup_script = ?1, run_script = ?2, base_branch = ?3, branch_prefix = ?4, worktree_dir = ?5 WHERE id = ?6",
+        "UPDATE repos SET setup_script = ?1, run_script = ?2, base_branch = ?3, branch_prefix = ?4 WHERE id = ?5",
         params![
             repo.setup_script,
             repo.run_script,
             repo.base_branch,
             repo.branch_prefix,
-            repo.worktree_dir,
             repo.id,
         ],
     )

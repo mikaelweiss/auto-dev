@@ -135,6 +135,10 @@ export async function addRepo(owner: string, name: string): Promise<RepoConfig> 
 	return invoke('github_add_repo', { owner, name });
 }
 
+export async function addLocalRepo(path: string): Promise<RepoConfig> {
+	return invoke('github_add_local_repo', { path });
+}
+
 export async function getRepoRemovalInfo(repoId: number): Promise<RepoRemovalInfo> {
 	return invoke('github_get_repo_removal_info', { repoId });
 }

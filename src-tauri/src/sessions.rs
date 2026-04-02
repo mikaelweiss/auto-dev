@@ -147,7 +147,7 @@ pub async fn session_start(
         &repo_path,
         issue_number,
         &repo.branch_prefix,
-        &repo.worktree_dir,
+        &repo.name,
         &repo.base_branch,
     )
     .await
@@ -842,10 +842,13 @@ pub async fn session_cleanup(
             .ok_or_else(|| "Repository local path not configured".to_string())?
     };
 
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
     let slug = format!("issue-{issue_number}");
     let branch_name = format!("{}issue-{issue_number}", repo.branch_prefix);
-    let worktree_path = std::path::Path::new(&repo_path)
-        .join(&repo.worktree_dir)
+    let worktree_path = std::path::Path::new(&home)
+        .join(".autodev")
+        .join(&repo.name)
         .join(&slug)
         .to_string_lossy()
         .to_string();
