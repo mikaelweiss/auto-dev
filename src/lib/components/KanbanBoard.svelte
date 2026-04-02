@@ -4,7 +4,6 @@
 	import { issuesByColumn, refreshIssues } from '$lib/stores/issues';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
-	import { log } from '$lib/stores/backend';
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
 	import KanbanColumn from './KanbanColumn.svelte';
 
@@ -41,13 +40,9 @@
 		columns[columnId] = e.detail.items as Issue[];
 
 		const { info } = e.detail;
-		log('DND', `handleFinalize: column=${columnId} trigger=${info.trigger} id=${info.id} itemCount=${e.detail.items.length}`);
-		log('DND', `  TRIGGERS.DROPPED_INTO_ZONE=${TRIGGERS.DROPPED_INTO_ZONE} DROPPED_INTO_ANOTHER=${TRIGGERS.DROPPED_INTO_ANOTHER}`);
-		log('DND', `  triggerMatch=${info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER}`);
 
 		if (info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
 			const droppedIssue = e.detail.items.find((item) => String(item.id) === String(info.id));
-			log('DND', `  droppedIssue found=${!!droppedIssue} (searched for id="${info.id}" among [${e.detail.items.map(i => String(i.id)).join(',')}])`);
 			if (droppedIssue) {
 				moveIssueToColumn(columnId, droppedIssue as Issue);
 			}
@@ -60,19 +55,13 @@
 			(r) => r.owner === issue.repo_owner && r.name === issue.repo_name
 		);
 
-		log('DRAG', `moveIssueToColumn: #${issue.number} "${issue.title}" from=${currentColumn} to=${targetColumn} repo=${repo?.id ?? 'NOT FOUND'}`);
-
 		if (targetColumn === 'claimed' && repo) {
-			log('DRAG', `Starting session for repo_id=${repo.id} issue=${issue.number}`);
 			try {
-				const result = await backend.startSession(repo.id, issue.number);
-				log('DRAG', `startSession resolved: ${JSON.stringify(result)}`);
+				await backend.startSession(repo.id, issue.number);
 			} catch (e) {
-				log('DRAG', `startSession THREW: ${e}`);
 				errorMessage = String(e);
 				setTimeout(() => { errorMessage = ''; }, 8000);
 			}
-			log('DRAG', `Syncing label from=${currentColumn} to=${targetColumn}`);
 			syncLabel(issue, currentColumn, targetColumn);
 			return;
 		}
@@ -108,19 +97,16 @@
 	function syncLabel(issue: Issue, fromColumn: ColumnId, toColumn: ColumnId) {
 		const oldLabel = COLUMN_CONFIG[fromColumn].github_label;
 		const newLabel = COLUMN_CONFIG[toColumn].github_label;
-		log('LABEL', `syncLabel: #${issue.number} oldLabel=${oldLabel} newLabel=${newLabel}`);
 
 		if (oldLabel) {
 			backend
 				.removeLabel(issue.repo_owner, issue.repo_name, issue.number, oldLabel)
-				.then(() => log('LABEL', `Removed label "${oldLabel}" from #${issue.number}`))
-				.catch((e) => log('LABEL', `FAILED to remove label "${oldLabel}": ${e}`));
+				.catch(() => {});
 		}
 		if (newLabel) {
 			backend
 				.addLabel(issue.repo_owner, issue.repo_name, issue.number, newLabel)
-				.then(() => log('LABEL', `Added label "${newLabel}" to #${issue.number}`))
-				.catch((e) => log('LABEL', `FAILED to add label "${newLabel}": ${e}`));
+				.catch(() => {});
 		}
 	}
 </script>

@@ -3,7 +3,6 @@ import type { Issue, ColumnId } from '$lib/types';
 import { getColumnForIssue, getColumnForSession, COLUMN_ORDER } from '$lib/types';
 import { selectedRepoId, repos } from './repos';
 import { sessionByIssue } from './sessions';
-import { log } from './backend';
 
 export const issues = writable<Issue[]>([]);
 
@@ -28,8 +27,6 @@ export const issuesByColumn = derived(
 			(i) => i.repo_owner === repo.owner && i.repo_name === repo.name
 		);
 
-		log('DERIVE', `issuesByColumn: repo=${repo.owner}/${repo.name} (id=${repo.id}), ${filtered.length} issues, sessionByIssue has ${$sessionByIssue.size} entries`);
-
 		for (const issue of filtered) {
 			// Closed issues always go to done
 			if (issue.state === 'closed') {
@@ -43,13 +40,10 @@ export const issuesByColumn = derived(
 
 			if (session) {
 				const col = getColumnForSession(session);
-				log('DERIVE', `#${issue.number} -> ${col} (from session: stage=${session.stage} status=${session.status})`);
 				grouped[col].push(issue);
 			} else {
 				// No session — fall back to GitHub labels
 				const col = getColumnForIssue(issue);
-				const labels = issue.labels.map(l => l.name).join(',');
-				log('DERIVE', `#${issue.number} -> ${col} (no session, labels=[${labels}])`);
 				grouped[col].push(issue);
 			}
 		}
