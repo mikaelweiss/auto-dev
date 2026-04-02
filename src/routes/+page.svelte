@@ -3,6 +3,7 @@
 	import { checkAuth, startAuth } from '$lib/stores/auth';
 	import { loadRepos } from '$lib/stores/repos';
 	import { initBackend } from '$lib/stores/backend';
+	import { refreshIssues } from '$lib/stores/issues';
 	import { showNewIssueDialog, showSettings } from '$lib/stores/ui';
 	import KanbanBoard from '$lib/components/KanbanBoard.svelte';
 	import CardDetail from '$lib/components/CardDetail.svelte';
@@ -20,7 +21,10 @@
 		try {
 			await initBackend();
 			await checkAuth();
-			await loadRepos();
+			const repoList = await loadRepos();
+			if (repoList.length > 0) {
+				await refreshIssues(repoList[0].owner, repoList[0].name);
+			}
 			loading = false;
 		} catch (e) {
 			error = String(e);

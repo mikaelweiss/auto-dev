@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { DropdownMenu } from 'bits-ui';
 	import { repos, selectedRepoId } from '$lib/stores/repos';
+	import { refreshIssues } from '$lib/stores/issues';
 	import { showAddRepo } from '$lib/stores/ui';
 	import { ChevronDown, Plus, FolderGit2 } from 'lucide-svelte';
 
@@ -11,6 +12,10 @@
 	function selectRepo(id: number) {
 		selectedRepoId.set(id);
 		open = false;
+		const repo = $repos.find((r) => r.id === id);
+		if (repo) {
+			refreshIssues(repo.owner, repo.name);
+		}
 	}
 </script>
 

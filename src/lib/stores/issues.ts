@@ -1,52 +1,54 @@
 import { writable, derived } from 'svelte/store';
 import type { Issue, ColumnId } from '$lib/types';
 import { getColumnForIssue, COLUMN_ORDER } from '$lib/types';
+import { selectedRepoId, repos } from './repos';
 
 export const issues = writable<Issue[]>([]);
 
-export const issuesByColumn = derived(issues, ($issues) => {
-	const grouped: Record<ColumnId, Issue[]> = {
-		backlog: [],
-		claimed: [],
-		in_progress: [],
-		blocked: [],
-		review: [],
-		done: []
-	};
+export const issuesByColumn = derived(
+	[issues, selectedRepoId, repos],
+	([$issues, $selectedRepoId, $repos]) => {
+		const grouped: Record<ColumnId, Issue[]> = {
+			backlog: [],
+			claimed: [],
+			in_progress: [],
+			blocked: [],
+			review: [],
+			done: []
+		};
 
-	for (const issue of $issues) {
-		const column = getColumnForIssue(issue);
-		grouped[column].push(issue);
-	}
+		if (!$selectedRepoId) return grouped;
 
-	// Sort each column by updated_at descending
-	for (const col of COLUMN_ORDER) {
-		grouped[col].sort(
-			(a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+		const repo = $repos.find((r) => r.id === $selectedRepoId);
+		if (!repo) return grouped;
+
+		const filtered = $issues.filter(
+			(i) => i.repo_owner === repo.owner && i.repo_name === repo.name
 		);
-	}
 
-	return grouped;
-});
+		for (const issue of filtered) {
+			const column = getColumnForIssue(issue);
+			grouped[column].push(issue);
+		}
+
+		for (const col of COLUMN_ORDER) {
+			grouped[col].sort(
+				(a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+			);
+		}
+
+		return grouped;
+	}
+);
 
 export async function refreshIssues(owner: string, name: string) {
 	const { fetchIssues } = await import('./backend');
 	const fetched = await fetchIssues(owner, name);
 	issues.update((current) => {
-		const updated = [...current];
-		for (const incoming of fetched) {
-			const idx = updated.findIndex(
-				(i) =>
-					i.number === incoming.number &&
-					i.repo_owner === incoming.repo_owner &&
-					i.repo_name === incoming.repo_name
-			);
-			if (idx >= 0) {
-				updated[idx] = incoming;
-			} else {
-				updated.push(incoming);
-			}
-		}
-		return updated;
+		// Remove existing issues for this repo, then add the fresh ones
+		const other = current.filter(
+			(i) => !(i.repo_owner === owner && i.repo_name === name)
+		);
+		return [...other, ...fetched];
 	});
 }

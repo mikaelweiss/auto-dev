@@ -133,6 +133,33 @@ export async function stopSession(sessionId: string): Promise<void> {
 	return invoke('session_stop', { sessionId });
 }
 
+// Labels
+export async function addLabel(
+	owner: string,
+	name: string,
+	issueNumber: number,
+	label: string
+): Promise<void> {
+	return invoke('github_add_label', { owner, name, issueNumber, label });
+}
+
+export async function removeLabel(
+	owner: string,
+	name: string,
+	issueNumber: number,
+	label: string
+): Promise<void> {
+	return invoke('github_remove_label', { owner, name, issueNumber, label });
+}
+
+export async function closeIssue(
+	owner: string,
+	name: string,
+	issueNumber: number
+): Promise<void> {
+	return invoke('github_close_issue', { owner, name, issueNumber });
+}
+
 // Merge & Test
 export async function mergePR(
 	owner: string,
