@@ -48,7 +48,7 @@ export interface SessionLogEntry {
 	id: string;
 	session_id: string;
 	timestamp: string;
-	event_type: 'tool_call' | 'message' | 'error' | 'status_change';
+	event_type: 'tool_call' | 'message' | 'error' | 'status_change' | 'test_output';
 	content: string;
 }
 

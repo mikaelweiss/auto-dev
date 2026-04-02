@@ -877,6 +877,111 @@ fn insert_log_via_app(
     let _ = db::insert_session_log(&db, session_db_id, event_type, content);
 }
 
+// ── Internal: Parse Claude stream-json ───────────────────────────────────
+
+/// Parse a single line from Claude CLI's `--output-format stream-json`.
+/// Returns a vec of (event_type, content) pairs to emit. May return 0 or more entries.
+fn parse_stream_json_line(line: &str) -> Vec<(String, String)> {
+    let Ok(json) = serde_json::from_str::<Value>(line) else {
+        // Not JSON — emit as plain message
+        if !line.trim().is_empty() {
+            return vec![("message".to_string(), line.to_string())];
+        }
+        return vec![];
+    };
+
+    let raw_type = json["type"].as_str().unwrap_or("unknown");
+
+    match raw_type {
+        // System init events — not useful in the activity log
+        "system" => vec![],
+
+        // Assistant messages — may contain text and/or tool_use blocks
+        "assistant" => {
+            let mut entries = Vec::new();
+            if let Some(blocks) = json["message"]["content"].as_array() {
+                for block in blocks {
+                    let block_type = block["type"].as_str().unwrap_or("");
+                    match block_type {
+                        "text" => {
+                            if let Some(text) = block["text"].as_str() {
+                                if !text.trim().is_empty() {
+                                    entries.push(("message".to_string(), text.to_string()));
+                                }
+                            }
+                        }
+                        "tool_use" => {
+                            let name = block["name"].as_str().unwrap_or("tool");
+                            let input = &block["input"];
+                            let summary = format_tool_summary(name, input);
+                            entries.push(("tool_call".to_string(), summary));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            entries
+        }
+
+        // Tool results — skip (too verbose for the activity log)
+        "tool" => vec![],
+
+        // Final result
+        "result" => {
+            if let Some(result_text) = json["result"].as_str() {
+                if !result_text.trim().is_empty() {
+                    return vec![("message".to_string(), result_text.to_string())];
+                }
+            }
+            vec![]
+        }
+
+        // Fallback for unknown types — try common content fields
+        _ => {
+            let content = if let Some(text) = json["content"].as_str() {
+                text.to_string()
+            } else if let Some(result) = json["result"].as_str() {
+                result.to_string()
+            } else {
+                line.to_string()
+            };
+            if !content.trim().is_empty() {
+                vec![(raw_type.to_string(), content)]
+            } else {
+                vec![]
+            }
+        }
+    }
+}
+
+/// Format a human-readable summary for a tool call.
+fn format_tool_summary(name: &str, input: &Value) -> String {
+    match name {
+        "Read" | "Write" => {
+            let path = input["file_path"].as_str().unwrap_or("");
+            format!("{name}: {path}")
+        }
+        "Edit" => {
+            let path = input["file_path"].as_str().unwrap_or("");
+            format!("Edit: {path}")
+        }
+        "Bash" => {
+            let cmd = input["command"].as_str().unwrap_or("");
+            let truncated = if cmd.len() > 100 { &cmd[..100] } else { cmd };
+            format!("Bash: {truncated}")
+        }
+        "Grep" => {
+            let pattern = input["pattern"].as_str().unwrap_or("");
+            format!("Grep: {pattern}")
+        }
+        "Glob" => {
+            let pattern = input["pattern"].as_str().unwrap_or("");
+            format!("Glob: {pattern}")
+        }
+        _ => name.to_string(),
+    }
+}
+
 // ── Internal: Run Claude Session ────────────────────────────────────────
 
 async fn run_claude_session(
@@ -918,49 +1023,31 @@ async fn run_claude_session(
         .await
         .map_err(|e| format!("Failed to read claude output: {e}"))?
     {
-        // Try to parse as JSON for structured events
-        let event_type;
-        let content;
+        // Parse Claude CLI stream-json events into (event_type, content) pairs
+        let entries = parse_stream_json_line(&line);
 
-        if let Ok(json) = serde_json::from_str::<Value>(&line) {
-            event_type = json["type"]
-                .as_str()
-                .unwrap_or("message")
-                .to_string();
+        for (event_type, content) in entries {
+            full_output.push_str(&content);
+            full_output.push('\n');
 
-            // Extract the text content from various event types
-            content = if let Some(text) = json["content"].as_str() {
-                text.to_string()
-            } else if let Some(result) = json["result"].as_str() {
-                result.to_string()
-            } else {
-                line.clone()
-            };
-        } else {
-            event_type = "message".to_string();
-            content = line.clone();
-        }
+            // Persist log to DB
+            insert_log_via_app(app_handle, session_db_id, &event_type, &content);
 
-        full_output.push_str(&content);
-        full_output.push('\n');
-
-        // Persist log to DB
-        insert_log_via_app(app_handle, session_db_id, &event_type, &content);
-
-        // Emit log event to frontend
-        let _ = app_handle.emit(
-            "session-log",
-            SessionLogEvent {
-                session_id: session_db_id.to_string(),
-                entry: SessionLogEntry {
-                    id: uuid::Uuid::new_v4().to_string(),
+            // Emit log event to frontend
+            let _ = app_handle.emit(
+                "session-log",
+                SessionLogEvent {
                     session_id: session_db_id.to_string(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    event_type,
-                    content,
+                    entry: SessionLogEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        session_id: session_db_id.to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        event_type,
+                        content,
+                    },
                 },
-            },
-        );
+            );
+        }
     }
 
     let status = child
