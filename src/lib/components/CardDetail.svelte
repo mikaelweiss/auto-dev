@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { selectedIssue } from '$lib/stores/ui';
-	import { sessionsByIssue } from '$lib/stores/sessions';
+	import { sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import { getColumnForIssue } from '$lib/types';
 	import type { Session } from '$lib/types';
-	import { X, ExternalLink, Play, GitMerge, Send, Plus } from 'lucide-svelte';
+	import { X, ExternalLink, Play, GitMerge, Send, Plus, Copy, Check as CheckIcon } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 
 	let issue = $derived($selectedIssue);
@@ -123,6 +123,20 @@
 		if (repoConfig && issue) {
 			backend.startSession(repoConfig.id, issue.number);
 		}
+	}
+
+	let copied = $state(false);
+
+	function handleCopyConversation() {
+		if (!activeSession) return;
+		const logs = $sessionLogs.get(activeSession.id) ?? [];
+		const text = logs
+			.map((entry) => `[${entry.timestamp}] [${entry.event_type}] ${entry.content}`)
+			.join('\n');
+		navigator.clipboard.writeText(text).then(() => {
+			copied = true;
+			setTimeout(() => { copied = false; }, 2000);
+		});
 	}
 
 	function openInBrowser() {
@@ -265,9 +279,22 @@
 							<div class="bg-muted rounded-lg p-3 space-y-1.5">
 								<div class="flex items-center justify-between">
 									<span class="text-sm text-foreground">Stage: <span class="font-medium">{activeSession.stage}</span></span>
-									<span class="text-xs px-2 py-0.5 rounded-full {activeSession.status === 'running' ? 'bg-green-500/20 text-green-400' : activeSession.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-muted-foreground/20 text-muted-foreground'}">
-										{activeSession.status}
-									</span>
+									<div class="flex items-center gap-1.5">
+										<button
+											class="p-1 rounded hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors"
+											onclick={handleCopyConversation}
+											title="Copy conversation"
+										>
+											{#if copied}
+												<CheckIcon class="h-3.5 w-3.5 text-green-400" />
+											{:else}
+												<Copy class="h-3.5 w-3.5" />
+											{/if}
+										</button>
+										<span class="text-xs px-2 py-0.5 rounded-full {activeSession.status === 'running' ? 'bg-green-500/20 text-green-400' : activeSession.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-muted-foreground/20 text-muted-foreground'}">
+											{activeSession.status}
+										</span>
+									</div>
 								</div>
 								<div class="text-xs text-muted-foreground">
 									Elapsed: {elapsedTime(activeSession.started_at, activeSession.completed_at)}

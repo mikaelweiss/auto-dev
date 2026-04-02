@@ -461,6 +461,19 @@ pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, Strin
     Ok(conn.last_insert_rowid())
 }
 
+/// Mark any sessions left in active states as failed (app was quit mid-session).
+pub fn fail_orphaned_sessions(conn: &Connection) -> Result<u64, String> {
+    let completed_at = chrono::Utc::now().to_rfc3339();
+    let count = conn
+        .execute(
+            "UPDATE sessions SET status = 'failed', error_message = 'App quit while session was running', completed_at = ?1
+             WHERE status IN ('running', 'initializing', 'setup')",
+            params![completed_at],
+        )
+        .map_err(|e| format!("Failed to clean up orphaned sessions: {e}"))?;
+    Ok(count as u64)
+}
+
 pub fn update_session_status(
     conn: &Connection,
     session_db_id: i64,
