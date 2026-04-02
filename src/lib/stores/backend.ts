@@ -16,6 +16,14 @@ import { sessions, sessionLogs } from './sessions';
 
 // Initialize: set up event listeners for Rust -> frontend events
 export async function initBackend() {
+	// Load persisted sessions from DB so session state survives app restarts
+	try {
+		const persisted: Session[] = await invoke('session_list');
+		sessions.set(persisted);
+	} catch (e) {
+		console.error('Failed to load sessions:', e);
+	}
+
 	await listen<{ issues: Issue[]; repo_owner: string; repo_name: string }>(
 		'issues-updated',
 		(event) => {
@@ -189,6 +197,20 @@ export async function getPrompts(): Promise<AgentPrompt[]> {
 
 export async function updatePrompt(stage: SessionStage, promptText: string): Promise<void> {
 	return invoke('update_prompt', { stage, promptText });
+}
+
+// Repo Path
+export async function setRepoPath(repoId: number, path: string): Promise<void> {
+	return invoke('set_repo_path', { repoId, path });
+}
+
+export async function getRepoPath(repoId: number): Promise<string | null> {
+	return invoke('get_repo_path', { repoId });
+}
+
+// Repo Config
+export async function updateRepo(repo: RepoConfig): Promise<void> {
+	return invoke('github_update_repo', { repo });
 }
 
 // Polling

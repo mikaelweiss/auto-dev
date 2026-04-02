@@ -2,7 +2,7 @@ export type ColumnId = 'backlog' | 'claimed' | 'in_progress' | 'blocked' | 'revi
 
 export type SessionStage = 'spec' | 'implement' | 'review' | 'ci_fix' | 'merge_conflict';
 
-export type SessionStatus = 'running' | 'completed' | 'failed';
+export type SessionStatus = 'initializing' | 'setup' | 'running' | 'completed' | 'failed';
 
 export interface GitHubUser {
 	login: string;

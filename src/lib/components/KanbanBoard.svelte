@@ -7,6 +7,8 @@
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
 	import KanbanColumn from './KanbanColumn.svelte';
 
+	let errorMessage = $state('');
+
 	// Local mutable copy of issues by column so DnD can update it optimistically
 	let columns = $state<Record<ColumnId, Issue[]>>({
 		backlog: [],
@@ -53,13 +55,14 @@
 		);
 
 		if (targetColumn === 'claimed' && repo) {
-			// Start a session — this creates the worktree + launches Claude
-			// The session will determine the column from now on (local state is king)
+			// Start a session — creates session record immediately, then worktree + Claude.
+			// The session is created early so the card stays pinned even if later steps fail.
 			try {
 				await backend.startSession(repo.id, issue.number);
 			} catch (e) {
 				console.error('Failed to start session:', e);
-				// TODO: show error to user
+				errorMessage = String(e);
+				setTimeout(() => { errorMessage = ''; }, 8000);
 			}
 			// Best-effort label for GitHub visibility
 			syncLabel(issue, currentColumn, targetColumn);
@@ -111,14 +114,22 @@
 	}
 </script>
 
-<div class="flex-1 flex gap-3 overflow-x-auto px-4 py-3 min-h-0">
-	{#each COLUMN_ORDER as colId (colId)}
-		<KanbanColumn
-			columnId={colId}
-			title={COLUMN_CONFIG[colId].label}
-			issues={columns[colId]}
-			onconsider={handleConsider}
-			onfinalize={handleFinalize}
-		/>
-	{/each}
+<div class="flex-1 flex flex-col min-h-0 relative">
+	{#if errorMessage}
+		<div class="mx-4 mt-2 px-3 py-2 rounded-md bg-red-950/80 border border-red-800 text-red-300 text-xs">
+			<button class="float-right ml-2 text-red-400 hover:text-red-200" onclick={() => { errorMessage = ''; }}>x</button>
+			{errorMessage}
+		</div>
+	{/if}
+	<div class="flex-1 flex gap-3 overflow-x-auto px-4 py-3 min-h-0">
+		{#each COLUMN_ORDER as colId (colId)}
+			<KanbanColumn
+				columnId={colId}
+				title={COLUMN_CONFIG[colId].label}
+				issues={columns[colId]}
+				onconsider={handleConsider}
+				onfinalize={handleFinalize}
+			/>
+		{/each}
+	</div>
 </div>

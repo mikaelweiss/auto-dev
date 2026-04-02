@@ -333,7 +333,7 @@ pub fn get_active_session(
     let mut stmt = conn
         .prepare(
             "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status = 'running'
+             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status IN ('running', 'initializing', 'setup')
              ORDER BY started_at DESC LIMIT 1",
         )
         .map_err(|e| format!("Failed to query session: {e}"))?;
@@ -393,6 +393,38 @@ pub fn get_latest_session(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(format!("Failed to read session: {e}")),
     }
+}
+
+pub fn get_all_sessions(conn: &Connection) -> Result<Vec<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions ORDER BY started_at DESC",
+        )
+        .map_err(|e| format!("Failed to query sessions: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Session {
+                id: format!("{}", row.get::<_, i64>(0)?),
+                repo_id: row.get(1)?,
+                issue_number: row.get(2)?,
+                stage: row.get(3)?,
+                worktree_path: row.get(4)?,
+                session_id: row.get(5)?,
+                status: row.get(6)?,
+                error_message: row.get(7)?,
+                started_at: row.get(8)?,
+                completed_at: row.get(9)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query sessions: {e}"))?;
+
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row.map_err(|e| format!("Failed to read session row: {e}"))?);
+    }
+    Ok(sessions)
 }
 
 // ── Session Logs ────────────────────────────────────────────────────────

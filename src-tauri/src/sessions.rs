@@ -11,6 +11,14 @@ use crate::AppState;
 
 /// Find the claude CLI binary.
 fn find_claude() -> Result<String, String> {
+    // Check ~/.local/bin first (common install location)
+    if let Ok(home) = std::env::var("HOME") {
+        let local_path = format!("{home}/.local/bin/claude");
+        if std::path::Path::new(&local_path).exists() {
+            return Ok(local_path);
+        }
+    }
+
     for path in &[
         "/usr/local/bin/claude",
         "/opt/homebrew/bin/claude",
@@ -36,14 +44,25 @@ fn find_claude() -> Result<String, String> {
 // ── Tauri Commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
+pub async fn session_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Session>, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::get_all_sessions(&db)
+}
+
+/// Helper to emit a session-status event to the frontend.
+fn emit_session_status(app_handle: &tauri::AppHandle, session: &Session) {
+    let _ = app_handle.emit("session-status", session);
+}
+
+#[tauri::command]
 pub async fn session_start(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
-    let claude_path = find_claude()?;
-
     // Prevent duplicate sessions
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -55,58 +74,15 @@ pub async fn session_start(
         }
     }
 
-    // Get repo config
-    let repo = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_repo_by_id(&db, repo_id)?
-            .ok_or_else(|| format!("Repo {repo_id} not found"))?
-    };
-
-    // Get the spec prompt
-    let spec_prompt = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, "spec")?
-            .map(|p| p.prompt_text)
-            .unwrap_or_else(|| "Analyze this issue and write a spec.".to_string())
-    };
-
-    // Determine repo local path (parent of worktree_dir, or infer)
-    // For worktrees we need the actual repo path on disk.
-    // We'll store it as a setting per-repo, but for now use a convention:
-    // The user should have the repo cloned somewhere. We'll ask for it via the repo config.
-    // For now, we use the worktree_dir relative to a repo_path setting.
-    let repo_path = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_setting(&db, &format!("repo_{repo_id}_path"))?
-            .ok_or_else(|| {
-                "Repository local path not configured. Set it in repo settings.".to_string()
-            })?
-    };
-
-    // Create worktree
-    let worktree_path = worktrees::create_worktree(
-        &repo_path,
-        issue_number,
-        &repo.branch_prefix,
-        &repo.worktree_dir,
-        &repo.base_branch,
-    )
-    .await?;
-
-    // Run setup script
-    if !repo.setup_script.is_empty() {
-        worktrees::run_setup_script(&worktree_path, &repo.setup_script).await?;
-    }
-
-    // Create session in DB
+    // ── Create session IMMEDIATELY so the card is pinned ──
     let session = Session {
-        id: "0".to_string(), // will be replaced
+        id: "0".to_string(),
         repo_id,
         issue_number,
         stage: "spec".to_string(),
-        worktree_path: Some(worktree_path.clone()),
+        worktree_path: None,
         session_id: Some(uuid::Uuid::new_v4().to_string()),
-        status: "running".to_string(),
+        status: "initializing".to_string(),
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
@@ -117,13 +93,91 @@ pub async fn session_start(
         db::insert_session(&db, &session)?
     };
 
-    let session = Session {
+    let mut session = Session {
         id: session_db_id.to_string(),
         ..session
     };
 
-    // Emit session status
-    let _ = app_handle.emit("session-status", &session);
+    // Emit immediately — card is now pinned to "claimed"
+    emit_session_status(&app_handle, &session);
+
+    // Helper macro: on failure, mark session as failed and return
+    macro_rules! fail_session {
+        ($msg:expr) => {{
+            session.status = "failed".to_string();
+            session.error_message = Some($msg.clone());
+            update_status_via_app(&app_handle, session_db_id, "failed", Some(&$msg));
+            emit_session_status(&app_handle, &session);
+            return Ok(session);
+        }};
+    }
+
+    // ── Validate preconditions ──
+    let claude_path = match find_claude() {
+        Ok(p) => p,
+        Err(e) => fail_session!(e),
+    };
+
+    let repo = match {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_repo_by_id(&db, repo_id)?
+    } {
+        Some(r) => r,
+        None => fail_session!(format!("Repo {repo_id} not found")),
+    };
+
+    let spec_prompt = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_prompt(&db, "spec")?
+            .map(|p| p.prompt_text)
+            .unwrap_or_else(|| "Analyze this issue and write a spec.".to_string())
+    };
+
+    let repo_path = match {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_setting(&db, &format!("repo_{repo_id}_path"))?
+    } {
+        Some(p) => p,
+        None => fail_session!("Repository local path not configured. Set it in Settings > Repository.".to_string()),
+    };
+
+    // ── Create worktree ──
+    let worktree_path = match worktrees::create_worktree(
+        &repo_path,
+        issue_number,
+        &repo.branch_prefix,
+        &repo.worktree_dir,
+        &repo.base_branch,
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(e) => fail_session!(format!("Worktree creation failed: {e}")),
+    };
+
+    session.worktree_path = Some(worktree_path.clone());
+
+    // ── Run setup script ──
+    if !repo.setup_script.is_empty() {
+        session.status = "setup".to_string();
+        emit_session_status(&app_handle, &session);
+
+        if let Err(e) = worktrees::run_setup_script(&worktree_path, &repo.setup_script).await {
+            fail_session!(format!("Setup script failed: {e}"));
+        }
+    }
+
+    // ── Update to running ──
+    session.status = "running".to_string();
+    {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::update_session_status(&db, session_db_id, "running", None)?;
+        db.execute(
+            "UPDATE sessions SET worktree_path = ?1 WHERE id = ?2",
+            rusqlite::params![worktree_path, session_db_id],
+        ).map_err(|e| format!("Failed to update worktree path: {e}"))?;
+    }
+    emit_session_status(&app_handle, &session);
 
     // Spawn claude in background
     let app = app_handle.clone();
