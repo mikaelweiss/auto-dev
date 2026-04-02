@@ -132,6 +132,40 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         eprintln!("[DB] Migration complete");
     }
 
+    // Migration: recreate session_logs with INTEGER types and no CHECK constraint.
+    // The old table used TEXT PRIMARY KEY for id (never auto-assigned) and TEXT session_id.
+    let needs_logs_migration: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_logs'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("id TEXT PRIMARY KEY") || sql.contains("CHECK(event_type"))
+        .unwrap_or(false);
+
+    if needs_logs_migration {
+        eprintln!("[DB] Migrating session_logs table: fixing column types");
+        conn.execute_batch(
+            "
+            CREATE TABLE session_logs_new (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES sessions(id),
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                content TEXT NOT NULL
+            );
+            INSERT INTO session_logs_new (session_id, timestamp, event_type, content)
+                SELECT CAST(session_id AS INTEGER), timestamp, event_type, content FROM session_logs;
+            DROP TABLE session_logs;
+            ALTER TABLE session_logs_new RENAME TO session_logs;
+            CREATE INDEX IF NOT EXISTS idx_session_logs_session ON session_logs(session_id);
+            ",
+        )
+        .map_err(|e| format!("Failed to migrate session_logs table: {e}"))?;
+        eprintln!("[DB] session_logs migration complete");
+    }
+
     Ok(())
 }
 
