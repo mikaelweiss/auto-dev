@@ -101,6 +101,11 @@ export async function getRepos(): Promise<RepoConfig[]> {
 	return invoke('github_get_repos');
 }
 
+// Collaborators
+export async function listCollaborators(owner: string, name: string): Promise<GitHubUser[]> {
+	return invoke('github_list_collaborators', { owner, name });
+}
+
 // Issues
 export async function fetchIssues(owner: string, name: string): Promise<Issue[]> {
 	return invoke('github_fetch_issues', { owner, name });

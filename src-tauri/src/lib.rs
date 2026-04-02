@@ -63,6 +63,8 @@ pub fn run() {
             github::github_remove_repo,
             github::github_get_repos,
             github::github_update_repo,
+            // GitHub collaborators
+            github::github_list_collaborators,
             // GitHub issues
             github::github_fetch_issues,
             github::github_create_issue,
