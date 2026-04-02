@@ -199,12 +199,63 @@ pub async fn github_add_repo(
 }
 
 #[tauri::command]
+pub async fn github_get_repo_removal_info(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+) -> Result<RepoRemovalInfo, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
+
+    let repo = db::get_repo_by_id(&db, repo_id)?
+        .ok_or_else(|| format!("Repo {repo_id} not found"))?;
+
+    let local_path = db::get_setting(&db, &format!("repo_{repo_id}_path"))?;
+    let worktree_paths = db::get_worktree_paths_for_repo(&db, repo_id)?;
+    let session_count = db::count_sessions_for_repo(&db, repo_id)?;
+    let log_count = db::count_session_logs_for_repo(&db, repo_id)?;
+
+    Ok(RepoRemovalInfo {
+        repo_name: repo.full_name,
+        local_path,
+        worktree_paths,
+        session_count,
+        log_count,
+    })
+}
+
+#[tauri::command]
 pub async fn github_remove_repo(
     state: tauri::State<'_, AppState>,
     repo_id: i64,
 ) -> Result<(), String> {
+    // Gather info before deleting
+    let (repo, repo_path, worktree_paths) = {
+        let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        let repo = db::get_repo_by_id(&db, repo_id)?
+            .ok_or_else(|| format!("Repo {repo_id} not found"))?;
+        let repo_path = db::get_setting(&db, &format!("repo_{repo_id}_path"))?;
+        let worktree_paths = db::get_worktree_paths_for_repo(&db, repo_id)?;
+        (repo, repo_path, worktree_paths)
+    };
+
+    // Clean up worktrees on disk
+    if let Some(ref rp) = repo_path {
+        for wt_path in &worktree_paths {
+            // Extract issue number from worktree path to build branch name
+            let slug = std::path::Path::new(wt_path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            let branch_name = format!("{}{}", repo.branch_prefix, slug);
+
+            if let Err(e) = crate::worktrees::remove_worktree(rp, wt_path, &branch_name).await {
+                eprintln!("Warning: Failed to clean up worktree {wt_path}: {e}");
+            }
+        }
+    }
+
+    // Cascade delete all DB records
     let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
-    db::delete_repo(&db, repo_id)
+    db::delete_repo_cascade(&db, repo_id)
 }
 
 #[tauri::command]

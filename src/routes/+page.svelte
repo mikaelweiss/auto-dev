@@ -12,6 +12,7 @@
 	import NewIssueDialog from '$lib/components/NewIssueDialog.svelte';
 	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
 	import AddRepoDialog from '$lib/components/AddRepoDialog.svelte';
+	import RemoveRepoDialog from '$lib/components/RemoveRepoDialog.svelte';
 	import { Settings, Plus, Loader2 } from 'lucide-svelte';
 	import { onMount } from 'svelte';
 
@@ -148,5 +149,6 @@
 		<NewIssueDialog />
 		<SettingsDialog />
 		<AddRepoDialog />
+		<RemoveRepoDialog />
 	{/if}
 </div>

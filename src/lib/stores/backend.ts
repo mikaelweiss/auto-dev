@@ -7,6 +7,7 @@ import type {
 	GitHubUser,
 	GitHubRepo,
 	RepoConfig,
+	RepoRemovalInfo,
 	AppSettings,
 	AgentPrompt,
 	SessionStage
@@ -91,6 +92,10 @@ export async function listUserRepos(): Promise<GitHubRepo[]> {
 
 export async function addRepo(owner: string, name: string): Promise<RepoConfig> {
 	return invoke('github_add_repo', { owner, name });
+}
+
+export async function getRepoRemovalInfo(repoId: number): Promise<RepoRemovalInfo> {
+	return invoke('github_get_repo_removal_info', { repoId });
 }
 
 export async function removeRepo(repoId: number): Promise<void> {
