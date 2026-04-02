@@ -11,7 +11,7 @@ export const issuesByColumn = derived(
 	([$issues, $selectedRepoId, $repos, $sessionByIssue]) => {
 		const grouped: Record<ColumnId, Issue[]> = {
 			backlog: [],
-			claimed: [],
+			planning: [],
 			in_progress: [],
 			blocked: [],
 			review: [],

@@ -43,7 +43,7 @@ Six columns, driven entirely by GitHub labels:
 | Column | Label | What's Happening |
 |---|---|---|
 | Backlog | (none) | No work started |
-| Claimed | `autodev:claimed` | Spec session running |
+| Planning | `autodev:planning` | Spec session running |
 | In Progress | `autodev:in-progress` | Implement or Review running |
 | Blocked | `autodev:blocked` | Needs human input |
 | Ready for Review | `autodev:review` | PR open, waiting for user |
@@ -53,7 +53,7 @@ Labels are the source of truth. When a repo is first added, AutoDev ensures the 
 
 ### Drag-and-Drop Rules
 
-- Cards can only be dragged from **Backlog → Claimed** (starts Spec) or **Backlog → In Progress** (skips Spec, starts Implement)
+- Cards can only be dragged from **Backlog → Planning** (starts Spec) or **Backlog → In Progress** (skips Spec, starts Implement)
 - **While a Claude session is active, the card is locked** — it cannot be dragged anywhere
 - All other column transitions are automated by the pipeline
 
@@ -122,7 +122,7 @@ All 5 stage prompts (Spec, Implement, Review, CI Fix, Merge Conflict) are user-e
 
 ## Git Worktrees
 
-Each issue gets its own git worktree so multiple issues can run in parallel without touching the user's main working tree. Worktrees are created when an issue is first claimed and deleted after the PR is merged.
+Each issue gets its own git worktree so multiple issues can run in parallel without touching the user's main working tree. Worktrees are created when an issue first enters planning and deleted after the PR is merged.
 
 - **Branch naming**: `{configurable prefix}issue-{number` (default: `autodev/issue-42`)
 - **Worktree path**: `~/.autodev/{repo-name}/issue-{number}/`
