@@ -902,7 +902,7 @@ fn parse_stream_json_line(line: &str) -> Vec<(String, String)> {
 
     match raw_type {
         // System init events — not useful in the activity log
-        "system" => vec![],
+        "system" | "user" | "rate_limit_event" => vec![],
 
         // Assistant messages — may contain text and/or tool_use blocks
         "assistant" => {

@@ -130,10 +130,38 @@
 	function handleCopyConversation() {
 		if (!activeSession) return;
 		const logs = $sessionLogs.get(activeSession.id) ?? [];
-		const text = logs
-			.map((entry) => `[${entry.timestamp}] [${entry.event_type}] ${entry.content}`)
-			.join('\n');
-		navigator.clipboard.writeText(text).then(() => {
+		const parts: string[] = [];
+		let toolBatch: string[] = [];
+
+		function flushTools() {
+			if (toolBatch.length === 0) return;
+			if (toolBatch.length === 1) {
+				parts.push(`  [tool] ${toolBatch[0]}`);
+			} else {
+				parts.push(`  [${toolBatch.length} tools] ${toolBatch.map(t => t.split(':')[0].trim()).join(', ')}`);
+			}
+			toolBatch = [];
+		}
+
+		for (const entry of logs) {
+			if (entry.event_type === 'tool_call') {
+				toolBatch.push(entry.content);
+			} else {
+				flushTools();
+				if (entry.event_type === 'message') {
+					parts.push(entry.content);
+				} else if (entry.event_type === 'error') {
+					parts.push(`[error] ${entry.content}`);
+				} else if (entry.event_type === 'status_change') {
+					parts.push(`--- ${entry.content} ---`);
+				} else if (entry.event_type === 'test_output') {
+					parts.push(`[test]\n${entry.content}`);
+				}
+			}
+		}
+		flushTools();
+
+		navigator.clipboard.writeText(parts.join('\n\n')).then(() => {
 			copied = true;
 			setTimeout(() => { copied = false; }, 2000);
 		});
