@@ -28,7 +28,6 @@
 	let repoRunScript = $state('');
 	let repoBaseBranch = $state('');
 	let repoBranchPrefix = $state('');
-	let repoWorktreeDir = $state('');
 
 	let selectedRepo = $derived($repos.find((r) => r.id === $selectedRepoId));
 
@@ -56,7 +55,6 @@
 				repoRunScript = selectedRepo.run_script;
 				repoBaseBranch = selectedRepo.base_branch;
 				repoBranchPrefix = selectedRepo.branch_prefix;
-				repoWorktreeDir = selectedRepo.worktree_dir;
 			}
 
 			// Request fresh settings from backend
@@ -257,17 +255,6 @@
 									bind:value={repoBranchPrefix}
 								/>
 							</div>
-						</div>
-
-						<div class="space-y-1.5">
-							<label for="repo-worktree" class="text-sm font-medium text-foreground">Worktree Directory</label>
-							<p class="text-xs text-muted-foreground">Directory for git worktrees</p>
-							<input
-								id="repo-worktree"
-								class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring font-mono"
-								placeholder="/tmp/autodev-worktrees"
-								bind:value={repoWorktreeDir}
-							/>
 						</div>
 
 						<div class="flex justify-end pt-2">
