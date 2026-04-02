@@ -1,12 +1,28 @@
 <script lang="ts">
 	import { sessionLogs } from '$lib/stores/sessions';
-	import { Wrench, MessageSquare, AlertCircle, RefreshCw } from 'lucide-svelte';
+	import { fetchSessionLogs } from '$lib/stores/backend';
+	import { Wrench, MessageSquare, AlertCircle, RefreshCw, Terminal } from 'lucide-svelte';
 
 	let { sessionId }: { sessionId: string } = $props();
 
 	let container: HTMLDivElement | undefined = $state(undefined);
 
 	let logs = $derived(($sessionLogs.get(sessionId) ?? []).slice());
+
+	$effect(() => {
+		// Load persisted logs from the DB if none exist in the store yet
+		const currentLogs = $sessionLogs.get(sessionId);
+		if (!currentLogs || currentLogs.length === 0) {
+			fetchSessionLogs(sessionId).then((entries) => {
+				if (entries.length > 0) {
+					sessionLogs.update((current) => {
+						current.set(sessionId, entries);
+						return new Map(current);
+					});
+				}
+			});
+		}
+	});
 
 	$effect(() => {
 		// Auto-scroll when new entries arrive
@@ -37,6 +53,7 @@
 				class="flex items-start gap-2 px-2 py-1.5 rounded-md text-sm
 					{entry.event_type === 'error' ? 'bg-destructive/10 text-red-400' : ''}
 					{entry.event_type === 'tool_call' ? 'bg-muted/50 font-mono text-xs' : ''}
+					{entry.event_type === 'test_output' ? 'bg-muted/50 font-mono text-xs' : ''}
 				"
 			>
 				<span class="mt-0.5 shrink-0 text-muted-foreground">
@@ -46,6 +63,8 @@
 						<MessageSquare class="h-3.5 w-3.5" />
 					{:else if entry.event_type === 'error'}
 						<AlertCircle class="h-3.5 w-3.5 text-red-400" />
+					{:else if entry.event_type === 'test_output'}
+						<Terminal class="h-3.5 w-3.5" />
 					{:else}
 						<RefreshCw class="h-3.5 w-3.5" />
 					{/if}

@@ -29,6 +29,12 @@ pub fn run() {
                 http_client: reqwest::Client::new(),
             };
 
+            // Clean up any sessions left running from a previous app launch
+            {
+                let db = state.db.lock().expect("DB lock failed during setup");
+                let _ = db::fail_orphaned_sessions(&db);
+            }
+
             // Check auth and start polling in background
             let has_auth = {
                 let db = state.db.lock().expect("DB lock failed during setup");

@@ -461,6 +461,19 @@ pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, Strin
     Ok(conn.last_insert_rowid())
 }
 
+/// Mark any sessions left in active states as failed (app was quit mid-session).
+pub fn fail_orphaned_sessions(conn: &Connection) -> Result<u64, String> {
+    let completed_at = chrono::Utc::now().to_rfc3339();
+    let count = conn
+        .execute(
+            "UPDATE sessions SET status = 'failed', error_message = 'App quit while session was running', completed_at = ?1
+             WHERE status IN ('running', 'initializing', 'setup')",
+            params![completed_at],
+        )
+        .map_err(|e| format!("Failed to clean up orphaned sessions: {e}"))?;
+    Ok(count as u64)
+}
+
 pub fn update_session_status(
     conn: &Connection,
     session_db_id: i64,
@@ -530,6 +543,36 @@ pub fn get_latest_session(
         .map_err(|e| format!("Failed to query session: {e}"))?;
 
     let result = stmt.query_row(params![repo_id, issue_number], |row| {
+        Ok(Session {
+            id: format!("{}", row.get::<_, i64>(0)?),
+            repo_id: row.get(1)?,
+            issue_number: row.get(2)?,
+            stage: row.get(3)?,
+            worktree_path: row.get(4)?,
+            session_id: row.get(5)?,
+            status: row.get(6)?,
+            error_message: row.get(7)?,
+            started_at: row.get(8)?,
+            completed_at: row.get(9)?,
+        })
+    });
+
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to read session: {e}")),
+    }
+}
+
+pub fn get_session_by_id(conn: &Connection, session_id: i64) -> Result<Option<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions WHERE id = ?1",
+        )
+        .map_err(|e| format!("Failed to query session: {e}"))?;
+
+    let result = stmt.query_row(params![session_id], |row| {
         Ok(Session {
             id: format!("{}", row.get::<_, i64>(0)?),
             repo_id: row.get(1)?,

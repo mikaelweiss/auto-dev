@@ -68,11 +68,50 @@ export async function initBackend() {
 		});
 	});
 
-	await listen<{ session_id: string; question: string }>('session-blocked', (_event) => {});
+	await listen<{ session_id: string; question: string }>('session-blocked', (event) => {
+		sessionLogs.update((current) => {
+			const logs = current.get(event.payload.session_id) ?? [];
+			logs.push({
+				id: crypto.randomUUID(),
+				session_id: event.payload.session_id,
+				timestamp: new Date().toISOString(),
+				event_type: 'message',
+				content: event.payload.question
+			});
+			current.set(event.payload.session_id, logs);
+			return new Map(current);
+		});
+	});
 
-	await listen<{ session_id: string; error: string }>('session-error', (_event) => {});
+	await listen<{ session_id: string; error: string }>('session-error', (event) => {
+		sessionLogs.update((current) => {
+			const logs = current.get(event.payload.session_id) ?? [];
+			logs.push({
+				id: crypto.randomUUID(),
+				session_id: event.payload.session_id,
+				timestamp: new Date().toISOString(),
+				event_type: 'error',
+				content: event.payload.error
+			});
+			current.set(event.payload.session_id, logs);
+			return new Map(current);
+		});
+	});
 
-	await listen<{ session_id: string; line: string }>('test-output', (_event) => {});
+	await listen<{ session_id: string; line: string }>('test-output', (event) => {
+		sessionLogs.update((current) => {
+			const logs = current.get(event.payload.session_id) ?? [];
+			logs.push({
+				id: crypto.randomUUID(),
+				session_id: event.payload.session_id,
+				timestamp: new Date().toISOString(),
+				event_type: 'test_output',
+				content: event.payload.line
+			});
+			current.set(event.payload.session_id, logs);
+			return new Map(current);
+		});
+	});
 }
 
 // Auth
@@ -228,6 +267,11 @@ export async function getSelectedRepoId(): Promise<number | null> {
 
 export async function setSelectedRepoId(repoId: number): Promise<void> {
 	return invoke('set_selected_repo_id', { repoId });
+}
+
+// Session Logs
+export async function fetchSessionLogs(sessionId: string): Promise<SessionLogEntry[]> {
+	return invoke('session_get_logs', { sessionId });
 }
 
 // Polling

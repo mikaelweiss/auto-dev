@@ -31,6 +31,11 @@ pub async fn create_worktree(
         .ok_or_else(|| "Invalid worktree path".to_string())?
         .to_string();
 
+    // If the worktree already exists, reuse it — a previous session already set it up
+    if wt_path.exists() {
+        return Ok(wt_path_str);
+    }
+
     // Fetch latest from remote
     let fetch_output = Command::new("git")
         .args(["fetch", "origin", base_branch])
