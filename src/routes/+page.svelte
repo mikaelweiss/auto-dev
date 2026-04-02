@@ -5,10 +5,11 @@
 	import { get } from 'svelte/store';
 	import { initBackend } from '$lib/stores/backend';
 	import { refreshIssues } from '$lib/stores/issues';
-	import { showNewIssueDialog, showSettings, showCommandPalette, selectedIssue, showAddRepo, removeRepoId } from '$lib/stores/ui';
+	import { showNewIssueDialog, showSettings, showCommandPalette, showKeyboardShortcuts, selectedIssue, showAddRepo, removeRepoId } from '$lib/stores/ui';
 	import { COLUMN_ORDER } from '$lib/types';
 	import KanbanBoard from '$lib/components/KanbanBoard.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import CardDetail from '$lib/components/CardDetail.svelte';
 	import RepoSelector from '$lib/components/RepoSelector.svelte';
 	import NewIssueDialog from '$lib/components/NewIssueDialog.svelte';
@@ -42,16 +43,24 @@
 			return;
 		}
 
-		// Cmd+, — settings
+		// Cmd+/ — toggle keyboard shortcuts
+		if (e.key === '/' && e.metaKey) {
+			e.preventDefault();
+			showKeyboardShortcuts.update((v) => !v);
+			return;
+		}
+
+		// Cmd+, — toggle settings
 		if (e.key === ',' && e.metaKey) {
 			e.preventDefault();
-			showSettings.set(true);
+			showSettings.update((v) => !v);
 			return;
 		}
 
 		// Escape — close topmost overlay
 		if (e.key === 'Escape') {
 			if (get(showCommandPalette)) { showCommandPalette.set(false); return; }
+			if (get(showKeyboardShortcuts)) { showKeyboardShortcuts.set(false); return; }
 			if (get(selectedIssue)) { selectedIssue.set(null); return; }
 			if (get(showSettings)) { showSettings.set(false); return; }
 			if (get(showNewIssueDialog)) { showNewIssueDialog.set(false); return; }
@@ -223,5 +232,6 @@
 		<AddRepoDialog />
 		<RemoveRepoDialog />
 		<CommandPalette />
+		<KeyboardShortcuts />
 	{/if}
 </div>
