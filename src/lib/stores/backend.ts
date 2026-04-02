@@ -7,6 +7,7 @@ import type {
 	GitHubUser,
 	GitHubRepo,
 	RepoConfig,
+	RepoRemovalInfo,
 	AppSettings,
 	AgentPrompt,
 	SessionStage
@@ -95,12 +96,21 @@ export async function addRepo(owner: string, name: string): Promise<RepoConfig> 
 	return invoke('github_add_repo', { owner, name });
 }
 
+export async function getRepoRemovalInfo(repoId: number): Promise<RepoRemovalInfo> {
+	return invoke('github_get_repo_removal_info', { repoId });
+}
+
 export async function removeRepo(repoId: number): Promise<void> {
 	return invoke('github_remove_repo', { repoId });
 }
 
 export async function getRepos(): Promise<RepoConfig[]> {
 	return invoke('github_get_repos');
+}
+
+// Collaborators
+export async function listCollaborators(owner: string, name: string): Promise<GitHubUser[]> {
+	return invoke('github_list_collaborators', { owner, name });
 }
 
 // Issues
@@ -205,6 +215,15 @@ export async function getRepoPath(repoId: number): Promise<string | null> {
 // Repo Config
 export async function updateRepo(repo: RepoConfig): Promise<void> {
 	return invoke('github_update_repo', { repo });
+}
+
+// Selected repo persistence
+export async function getSelectedRepoId(): Promise<number | null> {
+	return invoke('get_selected_repo_id');
+}
+
+export async function setSelectedRepoId(repoId: number): Promise<void> {
+	return invoke('set_selected_repo_id', { repoId });
 }
 
 // Polling

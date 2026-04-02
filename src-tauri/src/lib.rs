@@ -61,8 +61,11 @@ pub fn run() {
             github::github_list_user_repos,
             github::github_add_repo,
             github::github_remove_repo,
+            github::github_get_repo_removal_info,
             github::github_get_repos,
             github::github_update_repo,
+            // GitHub collaborators
+            github::github_list_collaborators,
             // GitHub issues
             github::github_fetch_issues,
             github::github_create_issue,
@@ -90,6 +93,8 @@ pub fn run() {
             sessions::prompts_set,
             sessions::set_repo_path,
             sessions::get_repo_path,
+            sessions::get_selected_repo_id,
+            sessions::set_selected_repo_id,
             // Caffeinate
             sessions::start_caffeinate,
             sessions::stop_caffeinate,

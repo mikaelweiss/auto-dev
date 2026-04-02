@@ -12,7 +12,7 @@
 	// Local mutable copy of issues by column so DnD can update it optimistically
 	let columns = $state<Record<ColumnId, Issue[]>>({
 		backlog: [],
-		claimed: [],
+		planning: [],
 		in_progress: [],
 		blocked: [],
 		review: [],
@@ -24,7 +24,7 @@
 		const storeData = $issuesByColumn;
 		columns = {
 			backlog: [...storeData.backlog],
-			claimed: [...storeData.claimed],
+			planning: [...storeData.planning],
 			in_progress: [...storeData.in_progress],
 			blocked: [...storeData.blocked],
 			review: [...storeData.review],
@@ -55,7 +55,7 @@
 			(r) => r.owner === issue.repo_owner && r.name === issue.repo_name
 		);
 
-		if (targetColumn === 'claimed' && repo) {
+		if (targetColumn === 'planning' && repo) {
 			try {
 				await backend.startSession(repo.id, issue.number);
 			} catch (e) {

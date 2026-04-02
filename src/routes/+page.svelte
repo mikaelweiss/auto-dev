@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { authenticated, currentUser, authError, authLoading } from '$lib/stores/auth';
 	import { checkAuth, startAuth } from '$lib/stores/auth';
-	import { loadRepos } from '$lib/stores/repos';
+	import { loadRepos, selectedRepoId } from '$lib/stores/repos';
+	import { get } from 'svelte/store';
 	import { initBackend } from '$lib/stores/backend';
 	import { refreshIssues } from '$lib/stores/issues';
 	import { showNewIssueDialog, showSettings } from '$lib/stores/ui';
@@ -11,6 +12,7 @@
 	import NewIssueDialog from '$lib/components/NewIssueDialog.svelte';
 	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
 	import AddRepoDialog from '$lib/components/AddRepoDialog.svelte';
+	import RemoveRepoDialog from '$lib/components/RemoveRepoDialog.svelte';
 	import { Settings, Plus, Loader2 } from 'lucide-svelte';
 	import { onMount } from 'svelte';
 
@@ -22,8 +24,10 @@
 			await initBackend();
 			await checkAuth();
 			const repoList = await loadRepos();
-			if (repoList.length > 0) {
-				await refreshIssues(repoList[0].owner, repoList[0].name);
+			const currentId = get(selectedRepoId);
+			const repo = repoList.find((r) => r.id === currentId) ?? repoList[0];
+			if (repo) {
+				await refreshIssues(repo.owner, repo.name);
 			}
 			loading = false;
 		} catch (e) {
@@ -145,5 +149,6 @@
 		<NewIssueDialog />
 		<SettingsDialog />
 		<AddRepoDialog />
+		<RemoveRepoDialog />
 	{/if}
 </div>
