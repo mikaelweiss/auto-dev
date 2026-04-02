@@ -6,3 +6,5 @@ export const showNewIssueDialog = writable(false);
 export const showSettings = writable(false);
 export const showAddRepo = writable(false);
 export const removeRepoId = writable<number | null>(null);
+export const showCommandPalette = writable(false);
+export const showKeyboardShortcuts = writable(false);

@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { authenticated, currentUser, authError, authLoading } from '$lib/stores/auth';
 	import { checkAuth, startAuth } from '$lib/stores/auth';
-	import { loadRepos, selectedRepoId } from '$lib/stores/repos';
+	import { loadRepos, selectedRepoId, repos, selectRepo } from '$lib/stores/repos';
 	import { get } from 'svelte/store';
 	import { initBackend } from '$lib/stores/backend';
 	import { refreshIssues } from '$lib/stores/issues';
-	import { showNewIssueDialog, showSettings } from '$lib/stores/ui';
+	import { showNewIssueDialog, showSettings, showCommandPalette, showKeyboardShortcuts, selectedIssue, showAddRepo, removeRepoId } from '$lib/stores/ui';
+	import { COLUMN_ORDER } from '$lib/types';
 	import KanbanBoard from '$lib/components/KanbanBoard.svelte';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import CardDetail from '$lib/components/CardDetail.svelte';
 	import RepoSelector from '$lib/components/RepoSelector.svelte';
 	import NewIssueDialog from '$lib/components/NewIssueDialog.svelte';
@@ -18,6 +21,82 @@
 
 	let loading = $state(true);
 	let error = $state('');
+
+	function handleGlobalKeydown(e: KeyboardEvent) {
+		// Don't handle shortcuts before auth
+		if (!$authenticated) return;
+
+		const target = e.target as HTMLElement;
+		const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+		// Cmd+K — toggle command palette
+		if (e.key === 'k' && e.metaKey && !e.shiftKey) {
+			e.preventDefault();
+			showCommandPalette.update((v) => !v);
+			return;
+		}
+
+		// Cmd+N — new issue
+		if (e.key === 'n' && e.metaKey && !e.shiftKey) {
+			e.preventDefault();
+			showNewIssueDialog.set(true);
+			return;
+		}
+
+		// Cmd+/ — toggle keyboard shortcuts
+		if (e.key === '/' && e.metaKey) {
+			e.preventDefault();
+			showKeyboardShortcuts.update((v) => !v);
+			return;
+		}
+
+		// Cmd+, — toggle settings
+		if (e.key === ',' && e.metaKey) {
+			e.preventDefault();
+			showSettings.update((v) => !v);
+			return;
+		}
+
+		// Escape — close topmost overlay
+		if (e.key === 'Escape') {
+			if (get(showCommandPalette)) { showCommandPalette.set(false); return; }
+			if (get(showKeyboardShortcuts)) { showKeyboardShortcuts.set(false); return; }
+			if (get(selectedIssue)) { selectedIssue.set(null); return; }
+			if (get(showSettings)) { showSettings.set(false); return; }
+			if (get(showNewIssueDialog)) { showNewIssueDialog.set(false); return; }
+			if (get(showAddRepo)) { showAddRepo.set(false); return; }
+			if (get(removeRepoId) !== null) { removeRepoId.set(null); return; }
+			return;
+		}
+
+		// Don't handle plain keys when in an input
+		if (inInput) return;
+
+		// Ctrl+1-9 — switch repo
+		if (e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
+			e.preventDefault();
+			const index = parseInt(e.key) - 1;
+			const repoList = get(repos);
+			if (index < repoList.length) {
+				selectRepo(repoList[index].id);
+				const repo = repoList[index];
+				refreshIssues(repo.owner, repo.name);
+			}
+			return;
+		}
+
+		// 1-6 — scroll to column
+		if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key >= '1' && e.key <= '6') {
+			e.preventDefault();
+			const index = parseInt(e.key) - 1;
+			if (index < COLUMN_ORDER.length) {
+				const colId = COLUMN_ORDER[index];
+				const el = document.querySelector(`[data-column-id="${colId}"]`);
+				el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+			}
+			return;
+		}
+	}
 
 	onMount(async () => {
 		try {
@@ -36,6 +115,8 @@
 		}
 	});
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="h-screen flex flex-col bg-background text-foreground dark">
 	{#if loading}
@@ -150,5 +231,7 @@
 		<SettingsDialog />
 		<AddRepoDialog />
 		<RemoveRepoDialog />
+		<CommandPalette />
+		<KeyboardShortcuts />
 	{/if}
 </div>
