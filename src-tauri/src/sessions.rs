@@ -975,7 +975,7 @@ fn format_tool_summary(name: &str, input: &Value) -> String {
         }
         "Bash" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            let truncated = if cmd.len() > 100 { &cmd[..100] } else { cmd };
+            let truncated: String = cmd.chars().take(100).collect();
             format!("Bash: {truncated}")
         }
         "Grep" => {
