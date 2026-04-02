@@ -47,8 +47,14 @@ fn find_claude() -> Result<String, String> {
 pub async fn session_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, String> {
+    eprintln!("[SESSION] session_list called");
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-    db::get_all_sessions(&db)
+    let sessions = db::get_all_sessions(&db)?;
+    eprintln!("[SESSION] session_list returning {} sessions", sessions.len());
+    for s in &sessions {
+        eprintln!("[SESSION]   id={} repo={} issue=#{} stage={} status={}", s.id, s.repo_id, s.issue_number, s.stage, s.status);
+    }
+    Ok(sessions)
 }
 
 /// Helper to emit a session-status event to the frontend.
@@ -63,15 +69,19 @@ pub async fn session_start(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
+    eprintln!("[SESSION] session_start called: repo_id={repo_id} issue_number={issue_number}");
+
     // Prevent duplicate sessions
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         if let Some(active) = db::get_active_session(&db, repo_id, issue_number)? {
+            eprintln!("[SESSION] BLOCKED: duplicate active session id={} stage={} status={}", active.id, active.stage, active.status);
             return Err(format!(
                 "Issue #{issue_number} already has an active {} session",
                 active.stage
             ));
         }
+        eprintln!("[SESSION] No duplicate session found, proceeding");
     }
 
     // ── Create session IMMEDIATELY so the card is pinned ──
@@ -98,12 +108,14 @@ pub async fn session_start(
         ..session
     };
 
+    eprintln!("[SESSION] Created session db_id={session_db_id}, emitting initializing status");
     // Emit immediately — card is now pinned to "claimed"
     emit_session_status(&app_handle, &session);
 
     // Helper macro: on failure, mark session as failed and return
     macro_rules! fail_session {
         ($msg:expr) => {{
+            eprintln!("[SESSION] FAIL: {}", $msg);
             session.status = "failed".to_string();
             session.error_message = Some($msg.clone());
             update_status_via_app(&app_handle, session_db_id, "failed", Some(&$msg));
@@ -113,35 +125,49 @@ pub async fn session_start(
     }
 
     // ── Validate preconditions ──
+    eprintln!("[SESSION] Finding claude binary...");
     let claude_path = match find_claude() {
-        Ok(p) => p,
+        Ok(p) => {
+            eprintln!("[SESSION] Found claude at: {p}");
+            p
+        }
         Err(e) => fail_session!(e),
     };
 
+    eprintln!("[SESSION] Loading repo config for repo_id={repo_id}...");
     let repo = match {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         db::get_repo_by_id(&db, repo_id)?
     } {
-        Some(r) => r,
+        Some(r) => {
+            eprintln!("[SESSION] Repo: {}/{} base_branch={} prefix={} worktree_dir={}", r.owner, r.name, r.base_branch, r.branch_prefix, r.worktree_dir);
+            r
+        }
         None => fail_session!(format!("Repo {repo_id} not found")),
     };
 
     let spec_prompt = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, "spec")?
-            .map(|p| p.prompt_text)
+        let p = db::get_prompt(&db, "spec")?;
+        eprintln!("[SESSION] Spec prompt loaded: custom={}", p.is_some());
+        p.map(|p| p.prompt_text)
             .unwrap_or_else(|| "Analyze this issue and write a spec.".to_string())
     };
 
+    eprintln!("[SESSION] Loading repo_path setting for key=repo_{repo_id}_path...");
     let repo_path = match {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         db::get_setting(&db, &format!("repo_{repo_id}_path"))?
     } {
-        Some(p) => p,
+        Some(p) => {
+            eprintln!("[SESSION] repo_path={p}");
+            p
+        }
         None => fail_session!("Repository local path not configured. Set it in Settings > Repository.".to_string()),
     };
 
     // ── Create worktree ──
+    eprintln!("[SESSION] Creating worktree at {repo_path}/{}/{}", repo.worktree_dir, format!("issue-{issue_number}"));
     let worktree_path = match worktrees::create_worktree(
         &repo_path,
         issue_number,
@@ -151,7 +177,10 @@ pub async fn session_start(
     )
     .await
     {
-        Ok(path) => path,
+        Ok(path) => {
+            eprintln!("[SESSION] Worktree created at: {path}");
+            path
+        }
         Err(e) => fail_session!(format!("Worktree creation failed: {e}")),
     };
 
@@ -159,15 +188,20 @@ pub async fn session_start(
 
     // ── Run setup script ──
     if !repo.setup_script.is_empty() {
+        eprintln!("[SESSION] Running setup script: {}", repo.setup_script);
         session.status = "setup".to_string();
         emit_session_status(&app_handle, &session);
 
         if let Err(e) = worktrees::run_setup_script(&worktree_path, &repo.setup_script).await {
             fail_session!(format!("Setup script failed: {e}"));
         }
+        eprintln!("[SESSION] Setup script completed");
+    } else {
+        eprintln!("[SESSION] No setup script configured, skipping");
     }
 
     // ── Update to running ──
+    eprintln!("[SESSION] Updating status to running, persisting worktree_path");
     session.status = "running".to_string();
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -178,6 +212,7 @@ pub async fn session_start(
         ).map_err(|e| format!("Failed to update worktree path: {e}"))?;
     }
     emit_session_status(&app_handle, &session);
+    eprintln!("[SESSION] Emitted running status, spawning claude");
 
     // Spawn claude in background
     let app = app_handle.clone();
@@ -187,6 +222,7 @@ pub async fn session_start(
     );
 
     tokio::spawn(async move {
+        eprintln!("[CLAUDE] Spawned claude task for session db_id={session_db_id}, cwd={wt_path}");
         let result = run_claude_session(
             &claude_path,
             &wt_path,
@@ -200,6 +236,7 @@ pub async fn session_start(
 
         match result {
             Ok(output) => {
+                eprintln!("[CLAUDE] Session {session_db_id} completed, output len={}", output.len());
                 update_status_via_app(&app, session_db_id, "completed", None);
 
                 let _ = app.emit(
@@ -231,6 +268,7 @@ pub async fn session_start(
                 }
             }
             Err(e) => {
+                eprintln!("[CLAUDE] Session {session_db_id} FAILED: {e}");
                 update_status_via_app(&app, session_db_id, "failed", Some(&e));
 
                 let _ = app.emit(
@@ -870,6 +908,7 @@ async fn run_claude_session(
     session_db_id: i64,
     app_handle: &tauri::AppHandle,
 ) -> Result<String, String> {
+    eprintln!("[CLAUDE] run_claude_session: binary={claude_path} cwd={worktree_path} mode={permission_mode} session={session_db_id}");
     let mut child = tokio::process::Command::new(claude_path)
         .args([
             "-p",
@@ -885,7 +924,11 @@ async fn run_claude_session(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn claude: {e}"))?;
+        .map_err(|e| {
+            eprintln!("[CLAUDE] FAILED to spawn: {e}");
+            format!("Failed to spawn claude: {e}")
+        })?;
+    eprintln!("[CLAUDE] Claude process spawned, pid={:?}", child.id());
 
     let stdout = child
         .stdout

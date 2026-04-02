@@ -43,6 +43,7 @@ pub fn start_polling(app_handle: tauri::AppHandle, interval_secs: u64) {
             };
 
             if let Some((token, repos)) = poll_data {
+                eprintln!("[POLL] Polling {} repos", repos.len());
                 for repo in &repos {
                     match github::fetch_issues_for_repo(
                         &state.http_client,
@@ -53,6 +54,7 @@ pub fn start_polling(app_handle: tauri::AppHandle, interval_secs: u64) {
                     .await
                     {
                         Ok(issues) => {
+                            eprintln!("[POLL] Fetched {} issues for {}/{}", issues.len(), repo.owner, repo.name);
                             let _ = app_handle.emit(
                                 "issues-updated",
                                 IssuesUpdatedEvent {
