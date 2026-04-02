@@ -180,6 +180,13 @@ pub async fn session_start(
     }
     emit_session_status(&app_handle, &session);
 
+    // Enable sleep prevention if this is the first active session
+    let sleep_enabled = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
+
     // Spawn claude in background
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
@@ -243,6 +250,8 @@ pub async fn session_start(
                 );
             }
         }
+
+        crate::sleep::on_session_end().await;
     });
 
     Ok(session)
@@ -314,6 +323,13 @@ pub async fn session_start_implement(
 
     let _ = app_handle.emit("session-status", &session);
 
+    // Enable sleep prevention if this is the first active session
+    let sleep_enabled = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
+
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
     let user_prompt = format!(
@@ -372,6 +388,8 @@ pub async fn session_start_implement(
                 );
             }
         }
+
+        crate::sleep::on_session_end().await;
     });
 
     Ok(session)
@@ -445,6 +463,13 @@ pub async fn session_start_review(
 
     let _ = app_handle.emit("session-status", &session);
 
+    // Enable sleep prevention if this is the first active session
+    let sleep_enabled = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
+
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
@@ -482,6 +507,7 @@ pub async fn session_start_review(
                             "error": msg,
                         }),
                     );
+                    crate::sleep::on_session_end().await;
                     return;
                 }
 
@@ -515,6 +541,8 @@ pub async fn session_start_review(
                 );
             }
         }
+
+        crate::sleep::on_session_end().await;
     });
 
     Ok(session)
@@ -587,6 +615,13 @@ pub async fn session_respond(
         db::insert_session(&db, &new_session)?
     };
 
+    // Enable sleep prevention if this is the first active session
+    let sleep_enabled = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
+
     let app = app_handle.clone();
     let wt_path = worktree_path;
 
@@ -632,6 +667,8 @@ pub async fn session_respond(
                 );
             }
         }
+
+        crate::sleep::on_session_end().await;
     });
 
     Ok(())
@@ -787,27 +824,6 @@ pub async fn set_selected_repo_id(
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
     db::set_setting(&db, "selected_repo_id", &repo_id.to_string())
-}
-
-// ── Caffeinate ──────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn start_caffeinate(pid: u32) -> Result<u32, String> {
-    let child = std::process::Command::new("caffeinate")
-        .args(["-i", "-w", &pid.to_string()])
-        .spawn()
-        .map_err(|e| format!("Failed to start caffeinate: {e}"))?;
-
-    Ok(child.id())
-}
-
-#[tauri::command]
-pub async fn stop_caffeinate(pid: u32) -> Result<(), String> {
-    std::process::Command::new("kill")
-        .arg(pid.to_string())
-        .output()
-        .map_err(|e| format!("Failed to stop caffeinate: {e}"))?;
-    Ok(())
 }
 
 // ── Session Logs & Cleanup ──────────────────────────────────────────────

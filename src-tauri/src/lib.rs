@@ -6,6 +6,7 @@ mod db;
 mod github;
 mod polling;
 mod sessions;
+mod sleep;
 mod types;
 mod worktrees;
 
@@ -103,12 +104,14 @@ pub fn run() {
             sessions::get_repo_path,
             sessions::get_selected_repo_id,
             sessions::set_selected_repo_id,
-            // Caffeinate
-            sessions::start_caffeinate,
-            sessions::stop_caffeinate,
             // Polling
             polling::force_poll,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                sleep::force_disable();
+            }
+        });
 }
