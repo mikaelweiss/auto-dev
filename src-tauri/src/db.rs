@@ -196,9 +196,74 @@ pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> 
     Ok(conn.last_insert_rowid())
 }
 
-pub fn delete_repo(conn: &Connection, repo_id: i64) -> Result<(), String> {
+/// Get all worktree paths for a repo's sessions.
+pub fn get_worktree_paths_for_repo(conn: &Connection, repo_id: i64) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT worktree_path FROM sessions WHERE repo_id = ?1 AND worktree_path IS NOT NULL")
+        .map_err(|e| format!("Failed to query worktree paths: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![repo_id], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Failed to query worktree paths: {e}"))?;
+
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row.map_err(|e| format!("Failed to read worktree path: {e}"))?);
+    }
+    Ok(paths)
+}
+
+/// Count sessions for a repo.
+pub fn count_sessions_for_repo(conn: &Connection, repo_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE repo_id = ?1",
+        params![repo_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to count sessions: {e}"))
+}
+
+/// Count session logs for a repo.
+pub fn count_session_logs_for_repo(conn: &Connection, repo_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM session_logs WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?1)",
+        params![repo_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to count session logs: {e}"))
+}
+
+/// Delete all data associated with a repo (sessions, logs, settings, then the repo itself).
+pub fn delete_repo_cascade(conn: &Connection, repo_id: i64) -> Result<(), String> {
+    // Delete session logs first (FK to sessions)
+    conn.execute(
+        "DELETE FROM session_logs WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?1)",
+        params![repo_id],
+    )
+    .map_err(|e| format!("Failed to delete session logs: {e}"))?;
+
+    // Delete sessions
+    conn.execute("DELETE FROM sessions WHERE repo_id = ?1", params![repo_id])
+        .map_err(|e| format!("Failed to delete sessions: {e}"))?;
+
+    // Delete repo-specific settings
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![format!("repo_{repo_id}_path")],
+    )
+    .map_err(|e| format!("Failed to delete repo path setting: {e}"))?;
+
+    // Clear selected_repo_id if it points to this repo
+    conn.execute(
+        "DELETE FROM settings WHERE key = 'selected_repo_id' AND value = ?1",
+        params![repo_id.to_string()],
+    )
+    .map_err(|e| format!("Failed to clear selected repo: {e}"))?;
+
+    // Delete the repo itself
     conn.execute("DELETE FROM repos WHERE id = ?1", params![repo_id])
         .map_err(|e| format!("Failed to delete repo: {e}"))?;
+
     Ok(())
 }
 

@@ -73,6 +73,14 @@ export interface RepoConfig {
 	worktree_dir: string;
 }
 
+export interface RepoRemovalInfo {
+	repo_name: string;
+	local_path: string | null;
+	worktree_paths: string[];
+	session_count: number;
+	log_count: number;
+}
+
 export interface AgentPrompt {
 	stage: SessionStage;
 	prompt_text: string;

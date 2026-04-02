@@ -10,6 +10,16 @@ export async function selectRepo(id: number) {
 	await backend.setSelectedRepoId(id);
 }
 
+export async function removeRepo(id: number) {
+	await backend.removeRepo(id);
+	repos.update((list) => list.filter((r) => r.id !== id));
+	// If the removed repo was selected, select another or clear
+	selectedRepoId.update((current) => {
+		if (current === id) return null;
+		return current;
+	});
+}
+
 export async function loadRepos(): Promise<RepoConfig[]> {
 	const list = await backend.getRepos();
 	repos.set(list);
