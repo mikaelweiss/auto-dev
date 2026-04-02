@@ -1,4 +1,4 @@
-export type ColumnId = 'backlog' | 'claimed' | 'in_progress' | 'blocked' | 'review' | 'done';
+export type ColumnId = 'backlog' | 'planning' | 'in_progress' | 'blocked' | 'review' | 'done';
 
 export type SessionStage = 'spec' | 'implement' | 'review' | 'ci_fix' | 'merge_conflict';
 
@@ -87,7 +87,7 @@ export interface AppSettings {
 
 export const COLUMN_CONFIG: Record<ColumnId, { label: string; github_label: string | null }> = {
 	backlog: { label: 'Backlog', github_label: null },
-	claimed: { label: 'Claimed', github_label: 'autodev:claimed' },
+	planning: { label: 'Planning', github_label: 'autodev:planning' },
 	in_progress: { label: 'In Progress', github_label: 'autodev:in-progress' },
 	blocked: { label: 'Blocked', github_label: 'autodev:blocked' },
 	review: { label: 'Ready for Review', github_label: 'autodev:review' },
@@ -96,7 +96,7 @@ export const COLUMN_CONFIG: Record<ColumnId, { label: string; github_label: stri
 
 export const COLUMN_ORDER: ColumnId[] = [
 	'backlog',
-	'claimed',
+	'planning',
 	'in_progress',
 	'blocked',
 	'review',
@@ -110,7 +110,7 @@ export function getColumnForIssue(issue: Issue): ColumnId {
 	if (labelNames.includes('autodev:review')) return 'review';
 	if (labelNames.includes('autodev:blocked')) return 'blocked';
 	if (labelNames.includes('autodev:in-progress')) return 'in_progress';
-	if (labelNames.includes('autodev:claimed')) return 'claimed';
+	if (labelNames.includes('autodev:planning')) return 'planning';
 	return 'backlog';
 }
 
@@ -118,7 +118,7 @@ export function getColumnForIssue(issue: Issue): ColumnId {
 export function getColumnForSession(session: Session): ColumnId {
 	switch (session.stage) {
 		case 'spec':
-			return 'claimed';
+			return 'planning';
 		case 'implement':
 		case 'ci_fix':
 			return 'in_progress';

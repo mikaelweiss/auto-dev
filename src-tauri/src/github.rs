@@ -566,7 +566,7 @@ async fn ensure_labels(
     name: &str,
 ) -> Result<(), String> {
     let labels = [
-        ("autodev:claimed", "0E8A16"),
+        ("autodev:planning", "0E8A16"),
         ("autodev:in-progress", "1D76DB"),
         ("autodev:blocked", "E4E669"),
         ("autodev:review", "5319E7"),
