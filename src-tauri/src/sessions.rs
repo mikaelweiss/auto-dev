@@ -717,6 +717,23 @@ pub async fn get_repo_path(
     db::get_setting(&db, &format!("repo_{repo_id}_path"))
 }
 
+#[tauri::command]
+pub async fn get_selected_repo_id(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<i64>, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    Ok(db::get_setting(&db, "selected_repo_id")?.and_then(|v| v.parse::<i64>().ok()))
+}
+
+#[tauri::command]
+pub async fn set_selected_repo_id(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::set_setting(&db, "selected_repo_id", &repo_id.to_string())
+}
+
 // ── Caffeinate ──────────────────────────────────────────────────────────
 
 #[tauri::command]

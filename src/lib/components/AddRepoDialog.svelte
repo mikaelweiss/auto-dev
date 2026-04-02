@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { showAddRepo } from '$lib/stores/ui';
-	import { repos, selectedRepoId } from '$lib/stores/repos';
+	import { repos, selectRepo } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import type { GitHubRepo } from '$lib/types';
 	import { FolderGit2, Loader2, Search } from 'lucide-svelte';
@@ -38,7 +38,7 @@
 		try {
 			const added = await backend.addRepo(repo.owner.login, repo.name);
 			repos.update((list) => [...list, added]);
-			selectedRepoId.set(added.id);
+			selectRepo(added.id);
 			close();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
