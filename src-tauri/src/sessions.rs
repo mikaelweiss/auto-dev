@@ -330,6 +330,12 @@ pub async fn session_start_implement(
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
+    let permission_mode = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let settings = db::get_app_settings(&db)?;
+        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
+    }.to_string();
+
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
     let user_prompt = format!(
@@ -343,7 +349,7 @@ pub async fn session_start_implement(
             &wt_path,
             &implement_prompt,
             &user_prompt,
-            "bypassPermissions",
+            &permission_mode,
             session_db_id,
             &app,
         )
@@ -470,6 +476,12 @@ pub async fn session_start_review(
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
+    let permission_mode = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let settings = db::get_app_settings(&db)?;
+        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
+    }.to_string();
+
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
@@ -486,7 +498,7 @@ pub async fn session_start_review(
             &wt_path,
             &review_prompt,
             &user_prompt,
-            "bypassPermissions",
+            &permission_mode,
             session_db_id,
             &app,
         )
@@ -591,9 +603,11 @@ pub async fn session_respond(
     };
 
     let permission_mode = if stage == "spec" {
-        "plan"
+        "plan".to_string()
     } else {
-        "bypassPermissions"
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let settings = db::get_app_settings(&db)?;
+        if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() }
     };
 
     // Create new session entry for the resumed work
@@ -631,7 +645,7 @@ pub async fn session_respond(
             &wt_path,
             &prompt,
             &message,
-            permission_mode,
+            &permission_mode,
             new_db_id,
             &app,
         )

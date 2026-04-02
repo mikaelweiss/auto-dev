@@ -90,6 +90,7 @@ export interface AppSettings {
 	sleep_prevention: boolean;
 	notifications_enabled: boolean;
 	poll_interval_seconds: number;
+	bypass_permissions: boolean;
 }
 
 export const COLUMN_CONFIG: Record<ColumnId, { label: string; github_label: string | null }> = {

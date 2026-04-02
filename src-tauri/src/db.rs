@@ -747,11 +747,15 @@ pub fn get_app_settings(conn: &Connection) -> Result<AppSettings, String> {
     let poll = get_setting(conn, "poll_interval_seconds")?
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(defaults.poll_interval_seconds);
+    let bypass = get_setting(conn, "bypass_permissions")?
+        .map(|v| v == "true")
+        .unwrap_or(defaults.bypass_permissions);
 
     Ok(AppSettings {
         sleep_prevention: sleep,
         notifications_enabled: notif,
         poll_interval_seconds: poll,
+        bypass_permissions: bypass,
     })
 }
 
@@ -759,6 +763,7 @@ pub fn save_app_settings(conn: &Connection, settings: &AppSettings) -> Result<()
     set_setting(conn, "sleep_prevention", &settings.sleep_prevention.to_string())?;
     set_setting(conn, "notifications_enabled", &settings.notifications_enabled.to_string())?;
     set_setting(conn, "poll_interval_seconds", &settings.poll_interval_seconds.to_string())?;
+    set_setting(conn, "bypass_permissions", &settings.bypass_permissions.to_string())?;
     Ok(())
 }
 

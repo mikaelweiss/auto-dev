@@ -86,6 +86,7 @@ pub struct AppSettings {
     pub sleep_prevention: bool,
     pub notifications_enabled: bool,
     pub poll_interval_seconds: i64,
+    pub bypass_permissions: bool,
 }
 
 impl Default for AppSettings {
@@ -94,6 +95,7 @@ impl Default for AppSettings {
             sleep_prevention: true,
             notifications_enabled: true,
             poll_interval_seconds: 15,
+            bypass_permissions: false,
         }
     }
 }
