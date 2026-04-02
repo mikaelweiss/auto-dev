@@ -224,6 +224,38 @@ pub async fn github_update_repo(
     db::update_repo(&db, &repo)
 }
 
+// ── Collaborator Commands ────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn github_list_collaborators(
+    state: tauri::State<'_, AppState>,
+    owner: String,
+    name: String,
+) -> Result<Vec<GitHubUser>, String> {
+    let token = get_token(&state)?;
+    let client = &state.http_client;
+
+    let resp = client
+        .get(format!(
+            "{GITHUB_API}/repos/{owner}/{name}/collaborators?per_page=100"
+        ))
+        .headers(github_headers(&token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch collaborators: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error {}", resp.status()));
+    }
+
+    let users: Vec<GitHubUser> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse collaborators: {e}"))?;
+
+    Ok(users)
+}
+
 // ── Issue Commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
