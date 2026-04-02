@@ -4,6 +4,7 @@
 	import { issuesByColumn, refreshIssues } from '$lib/stores/issues';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
+	import { log } from '$lib/stores/backend';
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
 	import KanbanColumn from './KanbanColumn.svelte';
 
@@ -54,19 +55,19 @@
 			(r) => r.owner === issue.repo_owner && r.name === issue.repo_name
 		);
 
-		console.log(`[DRAG] moveIssueToColumn: #${issue.number} "${issue.title}" from=${currentColumn} to=${targetColumn} repo=${repo?.id ?? 'NOT FOUND'}`);
+		log('DRAG', `moveIssueToColumn: #${issue.number} "${issue.title}" from=${currentColumn} to=${targetColumn} repo=${repo?.id ?? 'NOT FOUND'}`);
 
 		if (targetColumn === 'claimed' && repo) {
-			console.log(`[DRAG] Starting session for repo_id=${repo.id} issue=${issue.number}`);
+			log('DRAG', `Starting session for repo_id=${repo.id} issue=${issue.number}`);
 			try {
 				const result = await backend.startSession(repo.id, issue.number);
-				console.log(`[DRAG] startSession resolved:`, result);
+				log('DRAG', `startSession resolved: ${JSON.stringify(result)}`);
 			} catch (e) {
-				console.error(`[DRAG] startSession THREW:`, e);
+				log('DRAG', `startSession THREW: ${e}`);
 				errorMessage = String(e);
 				setTimeout(() => { errorMessage = ''; }, 8000);
 			}
-			console.log(`[DRAG] Syncing label from=${currentColumn} to=${targetColumn}`);
+			log('DRAG', `Syncing label from=${currentColumn} to=${targetColumn}`);
 			syncLabel(issue, currentColumn, targetColumn);
 			return;
 		}
@@ -102,19 +103,19 @@
 	function syncLabel(issue: Issue, fromColumn: ColumnId, toColumn: ColumnId) {
 		const oldLabel = COLUMN_CONFIG[fromColumn].github_label;
 		const newLabel = COLUMN_CONFIG[toColumn].github_label;
-		console.log(`[LABEL] syncLabel: #${issue.number} oldLabel=${oldLabel} newLabel=${newLabel}`);
+		log('LABEL', `syncLabel: #${issue.number} oldLabel=${oldLabel} newLabel=${newLabel}`);
 
 		if (oldLabel) {
 			backend
 				.removeLabel(issue.repo_owner, issue.repo_name, issue.number, oldLabel)
-				.then(() => console.log(`[LABEL] Removed label "${oldLabel}" from #${issue.number}`))
-				.catch((e) => console.error(`[LABEL] FAILED to remove label "${oldLabel}":`, e));
+				.then(() => log('LABEL', `Removed label "${oldLabel}" from #${issue.number}`))
+				.catch((e) => log('LABEL', `FAILED to remove label "${oldLabel}": ${e}`));
 		}
 		if (newLabel) {
 			backend
 				.addLabel(issue.repo_owner, issue.repo_name, issue.number, newLabel)
-				.then(() => console.log(`[LABEL] Added label "${newLabel}" to #${issue.number}`))
-				.catch((e) => console.error(`[LABEL] FAILED to add label "${newLabel}":`, e));
+				.then(() => log('LABEL', `Added label "${newLabel}" to #${issue.number}`))
+				.catch((e) => log('LABEL', `FAILED to add label "${newLabel}": ${e}`));
 		}
 	}
 </script>

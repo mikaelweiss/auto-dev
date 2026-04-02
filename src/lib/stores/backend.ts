@@ -14,23 +14,28 @@ import type {
 import { issues } from './issues';
 import { sessions, sessionLogs } from './sessions';
 
+/** Send a log line to Rust stderr so it appears in the terminal. */
+export function log(tag: string, message: string) {
+	invoke('debug_log', { tag, message }).catch(() => {});
+}
+
 // Initialize: set up event listeners for Rust -> frontend events
 export async function initBackend() {
-	console.log('[INIT] initBackend starting');
+	log('INIT', 'initBackend starting');
 
 	// Load persisted sessions from DB so session state survives app restarts
 	try {
 		const persisted: Session[] = await invoke('session_list');
-		console.log(`[INIT] Loaded ${persisted.length} sessions from DB:`, persisted.map(s => `id=${s.id} repo=${s.repo_id} issue=#${s.issue_number} stage=${s.stage} status=${s.status}`));
+		log('INIT', `Loaded ${persisted.length} sessions from DB: ${persisted.map(s => `id=${s.id} repo=${s.repo_id} issue=#${s.issue_number} stage=${s.stage} status=${s.status}`).join(', ')}`);
 		sessions.set(persisted);
 	} catch (e) {
-		console.error('[INIT] FAILED to load sessions:', e);
+		log('INIT', `FAILED to load sessions: ${e}`);
 	}
 
 	await listen<{ issues: Issue[]; repo_owner: string; repo_name: string }>(
 		'issues-updated',
 		(event) => {
-			console.log(`[POLL] issues-updated: ${event.payload.repo_owner}/${event.payload.repo_name} count=${event.payload.issues.length}`);
+			log('POLL', `issues-updated: ${event.payload.repo_owner}/${event.payload.repo_name} count=${event.payload.issues.length}`);
 			issues.update((current) => {
 				const updated = [...current];
 				for (const incoming of event.payload.issues) {
@@ -53,22 +58,22 @@ export async function initBackend() {
 
 	await listen<Session>('session-status', (event) => {
 		const s = event.payload;
-		console.log(`[EVENT] session-status: id=${s.id} repo=${s.repo_id} issue=#${s.issue_number} stage=${s.stage} status=${s.status} error=${s.error_message ?? 'none'}`);
+		log('EVENT', `session-status: id=${s.id} repo=${s.repo_id} issue=#${s.issue_number} stage=${s.stage} status=${s.status} error=${s.error_message ?? 'none'}`);
 		sessions.update((current) => {
 			const idx = current.findIndex((s) => s.id === event.payload.id);
 			if (idx >= 0) {
-				console.log(`[EVENT] session-status: updating existing session at index ${idx}`);
+				log('EVENT', `session-status: updating existing session at index ${idx}`);
 				current[idx] = event.payload;
 				return [...current];
 			}
-			console.log(`[EVENT] session-status: adding new session (total=${current.length + 1})`);
+			log('EVENT', `session-status: adding new session (total=${current.length + 1})`);
 			return [...current, event.payload];
 		});
 	});
 
 	await listen<{ session_id: string; entry: SessionLogEntry }>('session-log', (event) => {
 		const e = event.payload.entry;
-		console.log(`[EVENT] session-log: session=${event.payload.session_id} type=${e.event_type} content=${e.content.substring(0, 100)}`);
+		log('EVENT', `session-log: session=${event.payload.session_id} type=${e.event_type} content=${e.content.substring(0, 100)}`);
 		sessionLogs.update((current) => {
 			const logs = current.get(event.payload.session_id) ?? [];
 			logs.push(event.payload.entry);
@@ -78,18 +83,18 @@ export async function initBackend() {
 	});
 
 	await listen<{ session_id: string; question: string }>('session-blocked', (event) => {
-		console.log(`[EVENT] session-blocked: session=${event.payload.session_id}`);
+		log('EVENT', `session-blocked: session=${event.payload.session_id}`);
 	});
 
 	await listen<{ session_id: string; error: string }>('session-error', (event) => {
-		console.error(`[EVENT] session-error: session=${event.payload.session_id} error=${event.payload.error}`);
+		log('EVENT', `session-error: session=${event.payload.session_id} error=${event.payload.error}`);
 	});
 
 	await listen<{ session_id: string; line: string }>('test-output', (event) => {
-		console.log(`[EVENT] test-output: session=${event.payload.session_id} line=${event.payload.line}`);
+		log('EVENT', `test-output: session=${event.payload.session_id} line=${event.payload.line}`);
 	});
 
-	console.log('[INIT] initBackend complete');
+	log('INIT', 'initBackend complete');
 }
 
 // Auth

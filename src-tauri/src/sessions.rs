@@ -41,6 +41,14 @@ fn find_claude() -> Result<String, String> {
     }
 }
 
+// ── Debug ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn debug_log(tag: String, message: String) -> Result<(), String> {
+    eprintln!("[{tag}] {message}");
+    Ok(())
+}
+
 // ── Tauri Commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
