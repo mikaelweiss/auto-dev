@@ -24,6 +24,7 @@
 	});
 
 	// Repo-specific settings
+	let repoLocalPath = $state('');
 	let repoSetupScript = $state('');
 	let repoRunScript = $state('');
 	let repoBaseBranch = $state('');
@@ -57,6 +58,11 @@
 				repoBaseBranch = selectedRepo.base_branch;
 				repoBranchPrefix = selectedRepo.branch_prefix;
 				repoWorktreeDir = selectedRepo.worktree_dir;
+
+				// Load repo local path from settings
+				backend.getRepoPath(selectedRepo.id).then((path) => {
+					repoLocalPath = path ?? '';
+				});
 			}
 
 			// Request fresh settings from backend
@@ -217,6 +223,17 @@
 						</div>
 
 						<div class="space-y-1.5">
+							<label for="repo-local-path" class="text-sm font-medium text-foreground">Local Path</label>
+							<p class="text-xs text-muted-foreground">Absolute path to the repo clone on disk (required for worktrees)</p>
+							<input
+								id="repo-local-path"
+								class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring font-mono"
+								placeholder="/Users/you/code/my-repo"
+								bind:value={repoLocalPath}
+							/>
+						</div>
+
+						<div class="space-y-1.5">
 							<label for="repo-setup" class="text-sm font-medium text-foreground">Setup Script</label>
 							<p class="text-xs text-muted-foreground">Runs when initializing a new worktree</p>
 							<textarea
@@ -273,9 +290,21 @@
 						<div class="flex justify-end pt-2">
 							<button
 								class="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-								onclick={() => {
-									// Repo settings are saved via the general settings command
-									// For now, we just save what we have
+								onclick={async () => {
+									if (!selectedRepo) return;
+									// Save repo local path
+									if (repoLocalPath.trim()) {
+										await backend.setRepoPath(selectedRepo.id, repoLocalPath.trim());
+									}
+									// Save repo config
+									await backend.updateRepo({
+										...selectedRepo,
+										setup_script: repoSetupScript,
+										run_script: repoRunScript,
+										base_branch: repoBaseBranch,
+										branch_prefix: repoBranchPrefix,
+										worktree_dir: repoWorktreeDir,
+									});
 								}}
 							>
 								Save Repository Settings

@@ -76,6 +76,7 @@ pub fn run() {
             github::github_squash_merge,
             github::github_close_issue,
             // Sessions
+            sessions::session_list,
             sessions::session_start,
             sessions::session_start_implement,
             sessions::session_start_review,
