@@ -46,7 +46,7 @@
 		log('DND', `  triggerMatch=${info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER}`);
 
 		if (info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
-			const droppedIssue = e.detail.items.find((item) => String(item.id) === info.id);
+			const droppedIssue = e.detail.items.find((item) => String(item.id) === String(info.id));
 			log('DND', `  droppedIssue found=${!!droppedIssue} (searched for id="${info.id}" among [${e.detail.items.map(i => String(i.id)).join(',')}])`);
 			if (droppedIssue) {
 				moveIssueToColumn(columnId, droppedIssue as Issue);
