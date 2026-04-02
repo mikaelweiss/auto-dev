@@ -7,6 +7,7 @@ import type {
 	GitHubUser,
 	GitHubRepo,
 	RepoConfig,
+	RepoRemovalInfo,
 	AppSettings,
 	AgentPrompt,
 	SessionStage
@@ -16,6 +17,14 @@ import { sessions, sessionLogs } from './sessions';
 
 // Initialize: set up event listeners for Rust -> frontend events
 export async function initBackend() {
+	// Load persisted sessions from DB so session state survives app restarts
+	try {
+		const persisted: Session[] = await invoke('session_list');
+		sessions.set(persisted);
+	} catch (_) {
+		// Failed to load sessions
+	}
+
 	await listen<{ issues: Issue[]; repo_owner: string; repo_name: string }>(
 		'issues-updated',
 		(event) => {
@@ -59,17 +68,11 @@ export async function initBackend() {
 		});
 	});
 
-	await listen<{ session_id: string; question: string }>('session-blocked', (_event) => {
-		// Blocked state is handled via session-status updates and UI
-	});
+	await listen<{ session_id: string; question: string }>('session-blocked', (_event) => {});
 
-	await listen<{ session_id: string; error: string }>('session-error', (_event) => {
-		// Error state is handled via session-status updates and UI
-	});
+	await listen<{ session_id: string; error: string }>('session-error', (_event) => {});
 
-	await listen<{ session_id: string; line: string }>('test-output', (_event) => {
-		// Test output can be handled via session logs or dedicated UI
-	});
+	await listen<{ session_id: string; line: string }>('test-output', (_event) => {});
 }
 
 // Auth
@@ -95,6 +98,10 @@ export async function addRepo(owner: string, name: string): Promise<RepoConfig> 
 
 export async function addLocalRepo(path: string): Promise<RepoConfig> {
 	return invoke('github_add_local_repo', { path });
+}
+
+export async function getRepoRemovalInfo(repoId: number): Promise<RepoRemovalInfo> {
+	return invoke('github_get_repo_removal_info', { repoId });
 }
 
 export async function removeRepo(repoId: number): Promise<void> {
@@ -198,6 +205,20 @@ export async function getPrompts(): Promise<AgentPrompt[]> {
 
 export async function updatePrompt(stage: SessionStage, promptText: string): Promise<void> {
 	return invoke('update_prompt', { stage, promptText });
+}
+
+// Repo Path
+export async function setRepoPath(repoId: number, path: string): Promise<void> {
+	return invoke('set_repo_path', { repoId, path });
+}
+
+export async function getRepoPath(repoId: number): Promise<string | null> {
+	return invoke('get_repo_path', { repoId });
+}
+
+// Repo Config
+export async function updateRepo(repo: RepoConfig): Promise<void> {
+	return invoke('github_update_repo', { repo });
 }
 
 // Selected repo persistence

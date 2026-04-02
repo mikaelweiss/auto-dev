@@ -2,7 +2,7 @@ export type ColumnId = 'backlog' | 'planning' | 'in_progress' | 'blocked' | 'rev
 
 export type SessionStage = 'spec' | 'implement' | 'review' | 'ci_fix' | 'merge_conflict';
 
-export type SessionStatus = 'running' | 'completed' | 'failed';
+export type SessionStatus = 'initializing' | 'setup' | 'running' | 'completed' | 'failed';
 
 export interface GitHubUser {
 	login: string;
@@ -70,6 +70,14 @@ export interface RepoConfig {
 	run_script: string;
 	base_branch: string;
 	branch_prefix: string;
+}
+
+export interface RepoRemovalInfo {
+	repo_name: string;
+	local_path: string | null;
+	worktree_paths: string[];
+	session_count: number;
+	log_count: number;
 }
 
 export interface AgentPrompt {

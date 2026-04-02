@@ -5,7 +5,7 @@
 	import { repos } from '$lib/stores/repos';
 	import { selectedIssue } from '$lib/stores/ui';
 	import * as backend from '$lib/stores/backend';
-	import { Play, AlertCircle } from 'lucide-svelte';
+	import { Play, AlertCircle, Check, Loader2 } from 'lucide-svelte';
 
 	let { issue }: { issue: Issue } = $props();
 
@@ -66,9 +66,31 @@
 		<div class="flex items-center gap-2 min-w-0">
 			<span class="text-xs text-muted-foreground">#{issue.number}</span>
 			{#if session}
-				<span class="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-					{session.stage}
-				</span>
+				{#if session.status === 'initializing'}
+					<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+						<Loader2 class="h-3 w-3 animate-spin" />
+						Initializing...
+					</span>
+				{:else if session.status === 'setup'}
+					<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+						<Loader2 class="h-3 w-3 animate-spin" />
+						Setup...
+					</span>
+				{:else if session.status === 'running'}
+					<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400">
+						<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+						{session.stage}
+					</span>
+				{:else if session.status === 'completed'}
+					<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400">
+						<Check class="h-3 w-3" />
+						{session.stage}
+					</span>
+				{:else if session.status === 'failed'}
+					<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-red-500/10 text-red-600 dark:text-red-400">
+						{session.stage}
+					</span>
+				{/if}
 			{/if}
 		</div>
 

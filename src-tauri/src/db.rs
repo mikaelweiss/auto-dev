@@ -26,6 +26,7 @@ pub fn open_and_init() -> Result<Connection, String> {
         .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
 
     create_tables(&conn)?;
+    run_migrations(&conn)?;
     seed_default_prompts(&conn)?;
     Ok(conn)
 }
@@ -88,6 +89,50 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))
+}
+
+fn run_migrations(conn: &Connection) -> Result<(), String> {
+    // Migration: relax CHECK constraints on sessions.status to allow 'initializing' and 'setup'.
+    // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+    // Only runs if the old constraint exists.
+    let needs_migration: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("CHECK(status IN ('running', 'completed', 'failed'))"))
+        .unwrap_or(false);
+
+    if needs_migration {
+        eprintln!("[DB] Migrating sessions table: relaxing status CHECK constraint");
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions_new (
+                id INTEGER PRIMARY KEY,
+                repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+                issue_number INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                worktree_path TEXT,
+                session_id TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                error_message TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO sessions_new (id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at)
+                SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+            CREATE INDEX IF NOT EXISTS idx_sessions_repo_issue ON sessions(repo_id, issue_number);
+            ",
+        )
+        .map_err(|e| format!("Failed to migrate sessions table: {e}"))?;
+        eprintln!("[DB] Migration complete");
+    }
+
+    Ok(())
 }
 
 fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
@@ -194,9 +239,74 @@ pub fn insert_repo(conn: &Connection, repo: &RepoConfig) -> Result<i64, String> 
     Ok(conn.last_insert_rowid())
 }
 
-pub fn delete_repo(conn: &Connection, repo_id: i64) -> Result<(), String> {
+/// Get all worktree paths for a repo's sessions.
+pub fn get_worktree_paths_for_repo(conn: &Connection, repo_id: i64) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT worktree_path FROM sessions WHERE repo_id = ?1 AND worktree_path IS NOT NULL")
+        .map_err(|e| format!("Failed to query worktree paths: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![repo_id], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Failed to query worktree paths: {e}"))?;
+
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row.map_err(|e| format!("Failed to read worktree path: {e}"))?);
+    }
+    Ok(paths)
+}
+
+/// Count sessions for a repo.
+pub fn count_sessions_for_repo(conn: &Connection, repo_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE repo_id = ?1",
+        params![repo_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to count sessions: {e}"))
+}
+
+/// Count session logs for a repo.
+pub fn count_session_logs_for_repo(conn: &Connection, repo_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM session_logs WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?1)",
+        params![repo_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to count session logs: {e}"))
+}
+
+/// Delete all data associated with a repo (sessions, logs, settings, then the repo itself).
+pub fn delete_repo_cascade(conn: &Connection, repo_id: i64) -> Result<(), String> {
+    // Delete session logs first (FK to sessions)
+    conn.execute(
+        "DELETE FROM session_logs WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?1)",
+        params![repo_id],
+    )
+    .map_err(|e| format!("Failed to delete session logs: {e}"))?;
+
+    // Delete sessions
+    conn.execute("DELETE FROM sessions WHERE repo_id = ?1", params![repo_id])
+        .map_err(|e| format!("Failed to delete sessions: {e}"))?;
+
+    // Delete repo-specific settings
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![format!("repo_{repo_id}_path")],
+    )
+    .map_err(|e| format!("Failed to delete repo path setting: {e}"))?;
+
+    // Clear selected_repo_id if it points to this repo
+    conn.execute(
+        "DELETE FROM settings WHERE key = 'selected_repo_id' AND value = ?1",
+        params![repo_id.to_string()],
+    )
+    .map_err(|e| format!("Failed to clear selected repo: {e}"))?;
+
+    // Delete the repo itself
     conn.execute("DELETE FROM repos WHERE id = ?1", params![repo_id])
         .map_err(|e| format!("Failed to delete repo: {e}"))?;
+
     Ok(())
 }
 
@@ -328,7 +438,7 @@ pub fn get_active_session(
     let mut stmt = conn
         .prepare(
             "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status = 'running'
+             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status IN ('running', 'initializing', 'setup')
              ORDER BY started_at DESC LIMIT 1",
         )
         .map_err(|e| format!("Failed to query session: {e}"))?;
@@ -388,6 +498,38 @@ pub fn get_latest_session(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(format!("Failed to read session: {e}")),
     }
+}
+
+pub fn get_all_sessions(conn: &Connection) -> Result<Vec<Session>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
+             FROM sessions ORDER BY started_at DESC",
+        )
+        .map_err(|e| format!("Failed to query sessions: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Session {
+                id: format!("{}", row.get::<_, i64>(0)?),
+                repo_id: row.get(1)?,
+                issue_number: row.get(2)?,
+                stage: row.get(3)?,
+                worktree_path: row.get(4)?,
+                session_id: row.get(5)?,
+                status: row.get(6)?,
+                error_message: row.get(7)?,
+                started_at: row.get(8)?,
+                completed_at: row.get(9)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query sessions: {e}"))?;
+
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row.map_err(|e| format!("Failed to read session row: {e}"))?);
+    }
+    Ok(sessions)
 }
 
 // ── Session Logs ────────────────────────────────────────────────────────

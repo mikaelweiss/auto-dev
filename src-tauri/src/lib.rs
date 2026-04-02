@@ -63,6 +63,7 @@ pub fn run() {
             github::github_add_repo,
             github::github_add_local_repo,
             github::github_remove_repo,
+            github::github_get_repo_removal_info,
             github::github_get_repos,
             github::github_update_repo,
             // GitHub collaborators
@@ -77,6 +78,7 @@ pub fn run() {
             github::github_squash_merge,
             github::github_close_issue,
             // Sessions
+            sessions::session_list,
             sessions::session_start,
             sessions::session_start_implement,
             sessions::session_start_review,

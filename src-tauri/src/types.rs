@@ -119,6 +119,16 @@ pub struct GitHubRepoOwner {
     pub login: String,
 }
 
+/// Information about what will be deleted when removing a repo
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepoRemovalInfo {
+    pub repo_name: String,
+    pub local_path: Option<String>,
+    pub worktree_paths: Vec<String>,
+    pub session_count: i64,
+    pub log_count: i64,
+}
+
 /// Events emitted to the frontend
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IssuesUpdatedEvent {
