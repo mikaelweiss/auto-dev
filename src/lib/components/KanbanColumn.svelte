@@ -21,7 +21,7 @@
 	const flipDurationMs = 200;
 </script>
 
-<div class="flex flex-col min-w-[280px] w-[280px] max-w-[320px] h-full">
+<div class="flex flex-col min-w-[280px] w-[280px] max-w-[320px] h-full" data-column-id={columnId}>
 	<div class="flex items-center justify-between px-3 py-2 mb-2">
 		<h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
 		<span class="text-xs font-medium text-muted-foreground bg-muted rounded-full px-2 py-0.5">
