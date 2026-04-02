@@ -2,6 +2,7 @@
 	import type { Issue, ColumnId } from '$lib/types';
 	import { COLUMN_ORDER, COLUMN_CONFIG, getColumnForIssue } from '$lib/types';
 	import { issuesByColumn, refreshIssues } from '$lib/stores/issues';
+	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
 	import KanbanColumn from './KanbanColumn.svelte';
@@ -16,13 +17,9 @@
 		done: []
 	});
 
-	// Suppress store sync while an API call is in flight
-	let actionInFlight = $state(false);
-
-	// Sync from store when it updates (unless we're mid-action)
+	// Sync from store
 	$effect(() => {
 		const storeData = $issuesByColumn;
-		if (actionInFlight) return;
 		columns = {
 			backlog: [...storeData.backlog],
 			claimed: [...storeData.claimed],
@@ -51,43 +48,65 @@
 
 	async function moveIssueToColumn(targetColumn: ColumnId, issue: Issue) {
 		const currentColumn = getColumnForIssue(issue);
-		if (currentColumn === targetColumn) return;
+		const repo = $repos.find(
+			(r) => r.owner === issue.repo_owner && r.name === issue.repo_name
+		);
 
-		const currentLabel = COLUMN_CONFIG[currentColumn].github_label;
-		const targetLabel = COLUMN_CONFIG[targetColumn].github_label;
-
-		actionInFlight = true;
-		try {
-			// Remove old label if it has one
-			if (currentLabel) {
-				await backend.removeLabel(issue.repo_owner, issue.repo_name, issue.number, currentLabel);
+		if (targetColumn === 'claimed' && repo) {
+			// Start a session — this creates the worktree + launches Claude
+			// The session will determine the column from now on (local state is king)
+			try {
+				await backend.startSession(repo.id, issue.number);
+			} catch (e) {
+				console.error('Failed to start session:', e);
+				// TODO: show error to user
 			}
+			// Best-effort label for GitHub visibility
+			syncLabel(issue, currentColumn, targetColumn);
+			return;
+		}
 
-			// Add new label if the target column has one
-			if (targetLabel) {
-				await backend.addLabel(issue.repo_owner, issue.repo_name, issue.number, targetLabel);
-			}
-
-			// Handle special cases for "done" column
-			if (targetColumn === 'done') {
-				if (issue.pull_request) {
-					const prNumber = parseInt(issue.pull_request.url.split('/').pop() ?? '0', 10);
-					if (prNumber) {
+		if (targetColumn === 'done') {
+			if (issue.pull_request) {
+				const prNumber = parseInt(issue.pull_request.url.split('/').pop() ?? '0', 10);
+				if (prNumber) {
+					try {
 						await backend.mergePR(issue.repo_owner, issue.repo_name, prNumber);
+					} catch (e) {
+						console.error('Failed to merge PR:', e);
 					}
-				} else {
+				}
+			} else {
+				try {
 					await backend.closeIssue(issue.repo_owner, issue.repo_name, issue.number);
+				} catch (e) {
+					console.error('Failed to close issue:', e);
 				}
 			}
+			syncLabel(issue, currentColumn, targetColumn);
+			await refreshIssues(issue.repo_owner, issue.repo_name);
+			return;
+		}
 
-			// Refresh from GitHub to get the confirmed state
-			await refreshIssues(issue.repo_owner, issue.repo_name);
-		} catch (e) {
-			console.error('Failed to move issue:', e);
-			// Refresh to revert visual state to what GitHub actually has
-			await refreshIssues(issue.repo_owner, issue.repo_name);
-		} finally {
-			actionInFlight = false;
+		// For other column moves (no session involved), update labels and refresh
+		syncLabel(issue, currentColumn, targetColumn);
+		await refreshIssues(issue.repo_owner, issue.repo_name);
+	}
+
+	/** Best-effort label sync to GitHub — fire and forget. */
+	function syncLabel(issue: Issue, fromColumn: ColumnId, toColumn: ColumnId) {
+		const oldLabel = COLUMN_CONFIG[fromColumn].github_label;
+		const newLabel = COLUMN_CONFIG[toColumn].github_label;
+
+		if (oldLabel) {
+			backend
+				.removeLabel(issue.repo_owner, issue.repo_name, issue.number, oldLabel)
+				.catch((e) => console.error('Failed to remove label:', e));
+		}
+		if (newLabel) {
+			backend
+				.addLabel(issue.repo_owner, issue.repo_name, issue.number, newLabel)
+				.catch((e) => console.error('Failed to add label:', e));
 		}
 	}
 </script>

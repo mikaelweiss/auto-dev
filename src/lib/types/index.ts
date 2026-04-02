@@ -103,6 +103,7 @@ export const COLUMN_ORDER: ColumnId[] = [
 	'done'
 ];
 
+/** Column from GitHub labels only — used when there's no local session. */
 export function getColumnForIssue(issue: Issue): ColumnId {
 	if (issue.state === 'closed') return 'done';
 	const labelNames = issue.labels.map((l) => l.name);
@@ -111,5 +112,22 @@ export function getColumnForIssue(issue: Issue): ColumnId {
 	if (labelNames.includes('autodev:in-progress')) return 'in_progress';
 	if (labelNames.includes('autodev:claimed')) return 'claimed';
 	return 'backlog';
+}
+
+/** Column from local session state — takes priority over GitHub labels. */
+export function getColumnForSession(session: Session): ColumnId {
+	switch (session.stage) {
+		case 'spec':
+			return 'claimed';
+		case 'implement':
+		case 'ci_fix':
+			return 'in_progress';
+		case 'review':
+			return 'review';
+		case 'merge_conflict':
+			return 'blocked';
+		default:
+			return 'in_progress';
+	}
 }
 

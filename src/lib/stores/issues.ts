@@ -1,13 +1,14 @@
 import { writable, derived } from 'svelte/store';
 import type { Issue, ColumnId } from '$lib/types';
-import { getColumnForIssue, COLUMN_ORDER } from '$lib/types';
+import { getColumnForIssue, getColumnForSession, COLUMN_ORDER } from '$lib/types';
 import { selectedRepoId, repos } from './repos';
+import { sessionByIssue } from './sessions';
 
 export const issues = writable<Issue[]>([]);
 
 export const issuesByColumn = derived(
-	[issues, selectedRepoId, repos],
-	([$issues, $selectedRepoId, $repos]) => {
+	[issues, selectedRepoId, repos, sessionByIssue],
+	([$issues, $selectedRepoId, $repos, $sessionByIssue]) => {
 		const grouped: Record<ColumnId, Issue[]> = {
 			backlog: [],
 			claimed: [],
@@ -27,10 +28,27 @@ export const issuesByColumn = derived(
 		);
 
 		for (const issue of filtered) {
-			const column = getColumnForIssue(issue);
-			grouped[column].push(issue);
+			// Closed issues always go to done
+			if (issue.state === 'closed') {
+				grouped['done'].push(issue);
+				continue;
+			}
+
+			// Check for a local session — session state is king
+			const sessionKey = `${repo.id}:${issue.number}`;
+			const session = $sessionByIssue.get(sessionKey);
+
+			if (session) {
+				const col = getColumnForSession(session);
+				grouped[col].push(issue);
+			} else {
+				// No session — fall back to GitHub labels
+				const col = getColumnForIssue(issue);
+				grouped[col].push(issue);
+			}
 		}
 
+		// Sort each column by updated_at descending
 		for (const col of COLUMN_ORDER) {
 			grouped[col].sort(
 				(a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
