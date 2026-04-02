@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { DropdownMenu } from 'bits-ui';
-	import { repos, selectedRepoId } from '$lib/stores/repos';
+	import { repos, selectedRepoId, selectRepo as persistSelectRepo } from '$lib/stores/repos';
 	import { refreshIssues } from '$lib/stores/issues';
 	import { showAddRepo } from '$lib/stores/ui';
 	import { ChevronDown, Plus, FolderGit2 } from 'lucide-svelte';
@@ -10,7 +10,7 @@
 	let selectedRepo = $derived($repos.find((r) => r.id === $selectedRepoId));
 
 	function selectRepo(id: number) {
-		selectedRepoId.set(id);
+		persistSelectRepo(id);
 		open = false;
 		const repo = $repos.find((r) => r.id === id);
 		if (repo) {

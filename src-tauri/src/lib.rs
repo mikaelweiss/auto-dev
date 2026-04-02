@@ -91,6 +91,8 @@ pub fn run() {
             sessions::prompts_set,
             sessions::set_repo_path,
             sessions::get_repo_path,
+            sessions::get_selected_repo_id,
+            sessions::set_selected_repo_id,
             // Caffeinate
             sessions::start_caffeinate,
             sessions::stop_caffeinate,

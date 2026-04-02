@@ -196,6 +196,15 @@ export async function updatePrompt(stage: SessionStage, promptText: string): Pro
 	return invoke('update_prompt', { stage, promptText });
 }
 
+// Selected repo persistence
+export async function getSelectedRepoId(): Promise<number | null> {
+	return invoke('get_selected_repo_id');
+}
+
+export async function setSelectedRepoId(repoId: number): Promise<void> {
+	return invoke('set_selected_repo_id', { repoId });
+}
+
 // Polling
 export async function startPolling(): Promise<void> {
 	return invoke('start_polling');
