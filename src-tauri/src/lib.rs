@@ -19,6 +19,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Initialize database
             let conn = db::open_and_init().expect("Failed to initialize database");
@@ -60,6 +61,7 @@ pub fn run() {
             // GitHub repos
             github::github_list_user_repos,
             github::github_add_repo,
+            github::github_add_local_repo,
             github::github_remove_repo,
             github::github_get_repo_removal_info,
             github::github_get_repos,

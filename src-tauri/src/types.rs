@@ -72,7 +72,6 @@ pub struct RepoConfig {
     pub run_script: String,
     pub base_branch: String,
     pub branch_prefix: String,
-    pub worktree_dir: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
