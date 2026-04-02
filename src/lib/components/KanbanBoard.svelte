@@ -41,8 +41,13 @@
 		columns[columnId] = e.detail.items as Issue[];
 
 		const { info } = e.detail;
+		log('DND', `handleFinalize: column=${columnId} trigger=${info.trigger} id=${info.id} itemCount=${e.detail.items.length}`);
+		log('DND', `  TRIGGERS.DROPPED_INTO_ZONE=${TRIGGERS.DROPPED_INTO_ZONE} DROPPED_INTO_ANOTHER=${TRIGGERS.DROPPED_INTO_ANOTHER}`);
+		log('DND', `  triggerMatch=${info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER}`);
+
 		if (info.trigger === TRIGGERS.DROPPED_INTO_ZONE || info.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
 			const droppedIssue = e.detail.items.find((item) => String(item.id) === info.id);
+			log('DND', `  droppedIssue found=${!!droppedIssue} (searched for id="${info.id}" among [${e.detail.items.map(i => String(i.id)).join(',')}])`);
 			if (droppedIssue) {
 				moveIssueToColumn(columnId, droppedIssue as Issue);
 			}
