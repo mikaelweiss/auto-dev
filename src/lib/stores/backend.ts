@@ -176,6 +176,14 @@ export async function startSession(repoId: number, issueNumber: number): Promise
 	return invoke('session_start', { repoId, issueNumber });
 }
 
+export async function startImplementSession(repoId: number, issueNumber: number): Promise<void> {
+	return invoke('session_start_implement', { repoId, issueNumber });
+}
+
+export async function startReviewSession(repoId: number, issueNumber: number): Promise<void> {
+	return invoke('session_start_review', { repoId, issueNumber });
+}
+
 export async function respondToSession(sessionId: string, message: string): Promise<void> {
 	return invoke('session_respond', { sessionId, message });
 }
