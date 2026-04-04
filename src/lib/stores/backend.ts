@@ -242,8 +242,8 @@ export async function getPrompts(): Promise<AgentPrompt[]> {
 	return invoke('get_prompts');
 }
 
-export async function updatePrompt(stage: SessionStage, promptText: string): Promise<void> {
-	return invoke('update_prompt', { stage, promptText });
+export async function updatePrompt(stage: SessionStage, promptText: string, model: string, effort: string): Promise<void> {
+	return invoke('update_prompt', { stage, promptText, model, effort });
 }
 
 // Repo Path

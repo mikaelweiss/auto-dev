@@ -81,10 +81,15 @@ export interface RepoRemovalInfo {
 	log_count: number;
 }
 
+export type AgentModel = 'haiku' | 'sonnet' | 'opus';
+export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
+
 export interface AgentPrompt {
 	stage: SessionStage;
 	prompt_text: string;
 	is_default: boolean;
+	model: AgentModel;
+	effort: AgentEffort;
 }
 
 export interface AppSettings {

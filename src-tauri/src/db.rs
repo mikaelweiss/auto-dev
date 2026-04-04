@@ -76,7 +76,9 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
             id INTEGER PRIMARY KEY,
             stage TEXT NOT NULL UNIQUE,
             prompt_text TEXT NOT NULL,
-            is_default INTEGER NOT NULL DEFAULT 1
+            is_default INTEGER NOT NULL DEFAULT 1,
+            model TEXT NOT NULL DEFAULT 'haiku',
+            effort TEXT NOT NULL DEFAULT 'high'
         );
 
         CREATE TABLE IF NOT EXISTS session_logs (
@@ -184,6 +186,27 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to add hidden column: {e}"))?;
         eprintln!("[DB] hidden column migration complete");
+    }
+
+    // Migration: add model and effort columns to agent_prompts
+    let has_model: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_prompts'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("model"))
+        .unwrap_or(false);
+
+    if !has_model {
+        eprintln!("[DB] Migrating agent_prompts: adding model and effort columns");
+        conn.execute_batch(
+            "ALTER TABLE agent_prompts ADD COLUMN model TEXT NOT NULL DEFAULT 'haiku';\
+             ALTER TABLE agent_prompts ADD COLUMN effort TEXT NOT NULL DEFAULT 'high';",
+        )
+        .map_err(|e| format!("Failed to add model/effort columns: {e}"))?;
+        eprintln!("[DB] agent_prompts model/effort migration complete");
     }
 
     Ok(())
@@ -804,7 +827,7 @@ pub fn save_app_settings(conn: &Connection, settings: &AppSettings) -> Result<()
 
 pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
     let mut stmt = conn
-        .prepare("SELECT stage, prompt_text, is_default FROM agent_prompts")
+        .prepare("SELECT stage, prompt_text, is_default, model, effort FROM agent_prompts")
         .map_err(|e| format!("Failed to query prompts: {e}"))?;
 
     let rows = stmt
@@ -813,6 +836,8 @@ pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
                 stage: row.get(0)?,
                 prompt_text: row.get(1)?,
                 is_default: row.get::<_, i32>(2)? != 0,
+                model: row.get(3)?,
+                effort: row.get(4)?,
             })
         })
         .map_err(|e| format!("Failed to query prompts: {e}"))?;
@@ -826,7 +851,7 @@ pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
 
 pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>, String> {
     let mut stmt = conn
-        .prepare("SELECT stage, prompt_text, is_default FROM agent_prompts WHERE stage = ?1")
+        .prepare("SELECT stage, prompt_text, is_default, model, effort FROM agent_prompts WHERE stage = ?1")
         .map_err(|e| format!("Failed to query prompt: {e}"))?;
 
     let result = stmt.query_row(params![stage], |row| {
@@ -834,6 +859,8 @@ pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>,
             stage: row.get(0)?,
             prompt_text: row.get(1)?,
             is_default: row.get::<_, i32>(2)? != 0,
+            model: row.get(3)?,
+            effort: row.get(4)?,
         })
     });
 
@@ -844,10 +871,10 @@ pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>,
     }
 }
 
-pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str) -> Result<(), String> {
+pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str, model: &str, effort: &str) -> Result<(), String> {
     conn.execute(
-        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 0 WHERE stage = ?2",
-        params![prompt_text, stage],
+        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 0, model = ?3, effort = ?4 WHERE stage = ?2",
+        params![prompt_text, stage, model, effort],
     )
     .map_err(|e| format!("Failed to update prompt: {e}"))?;
     Ok(())
