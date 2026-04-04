@@ -92,6 +92,7 @@ pub async fn session_start(
     app_handle: tauri::AppHandle,
     repo_id: i64,
     issue_number: i64,
+    message: Option<String>,
 ) -> Result<Session, String> {
     // Prevent duplicate sessions
     {
@@ -237,13 +238,17 @@ pub async fn session_start(
     let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
     let name = repo.name.clone();
-    let user_prompt = format!(
-        "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
-         Follow the spec process: check for an existing spec in the issue comments, \
-         explore the codebase, and produce or update the spec. \
-         Use `gh` CLI for all GitHub interactions (comments, labels). \
-         The repo is {owner}/{name} and the issue number is {issue_number}."
-    );
+    let user_prompt = if let Some(ref msg) = message {
+        msg.clone()
+    } else {
+        format!(
+            "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
+             Follow the spec process: check for an existing spec in the issue comments, \
+             explore the codebase, and produce or update the spec. \
+             Use `gh` CLI for all GitHub interactions (comments, labels). \
+             The repo is {owner}/{name} and the issue number is {issue_number}."
+        )
+    };
 
     tokio::spawn(async move {
         let result = run_claude_session(
@@ -795,7 +800,7 @@ pub async fn session_retry(
 
     // Restart the appropriate stage
     match stage.as_str() {
-        "spec" => session_start(state, app_handle, repo_id, issue_number).await,
+        "spec" => session_start(state, app_handle, repo_id, issue_number, None).await,
         "implement" => session_start_implement(state, app_handle, repo_id, issue_number).await,
         "review" => session_start_review(state, app_handle, repo_id, issue_number).await,
         _ => Err(format!("Unknown stage: {stage}")),

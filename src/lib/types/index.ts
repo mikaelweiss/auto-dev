@@ -61,7 +61,8 @@ export interface SessionLogEntry {
 		| 'rate_limit'
 		| 'api_retry'
 		| 'task_progress'
-		| 'tool_progress';
+		| 'tool_progress'
+		| 'user_message';
 	content: string;
 }
 

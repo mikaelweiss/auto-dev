@@ -236,8 +236,20 @@
 		promise.finally(() => { startingSession = false; });
 	}
 
-	function handleNewSession() {
-		handleStartPhase('spec');
+	function handleNewSession(message?: string) {
+		if (message) {
+			handleStartChat(message);
+		} else {
+			handleStartPhase('spec');
+		}
+	}
+
+	function handleStartChat(message: string) {
+		if (!repoConfig || !issue) return;
+		pendingNewTab = false;
+		startingSession = true;
+		backend.startSession(repoConfig.id, issue.number, message)
+			.finally(() => { startingSession = false; });
 	}
 
 	let copied = $state(false);

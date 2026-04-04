@@ -172,8 +172,8 @@ export async function createIssue(
 }
 
 // Sessions
-export async function startSession(repoId: number, issueNumber: number): Promise<void> {
-	return invoke('session_start', { repoId, issueNumber });
+export async function startSession(repoId: number, issueNumber: number, message?: string): Promise<void> {
+	return invoke('session_start', { repoId, issueNumber, message: message ?? null });
 }
 
 export async function startImplementSession(repoId: number, issueNumber: number): Promise<void> {

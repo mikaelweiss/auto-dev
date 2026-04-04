@@ -2,7 +2,7 @@
 	import { sessionLogs } from '$lib/stores/sessions';
 	import { fetchSessionLogs } from '$lib/stores/backend';
 	import type { SessionLogEntry } from '$lib/types';
-	import { Wrench, AlertCircle, AlertTriangle, Sparkles, Activity, ChevronRight, ChevronDown, Terminal, Loader2 } from 'lucide-svelte';
+	import { Wrench, AlertCircle, AlertTriangle, Sparkles, Activity, ChevronRight, ChevronDown, Terminal, Loader2, User } from 'lucide-svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	let { sessionId, sessionStatus = 'running', sessionStage = '' }: { sessionId: string; sessionStatus?: string; sessionStage?: string } = $props();
@@ -62,6 +62,7 @@
 
 	type LogGroup =
 		| { kind: 'message'; entry: SessionLogEntry }
+		| { kind: 'user_message'; entry: SessionLogEntry }
 		| { kind: 'error'; entry: SessionLogEntry }
 		| { kind: 'status_change'; entry: SessionLogEntry }
 		| { kind: 'test_output'; entry: SessionLogEntry }
@@ -93,6 +94,9 @@
 					i++;
 				}
 				result.push({ kind: 'thinking', entries: batch });
+			} else if (entry.event_type === 'user_message') {
+				result.push({ kind: 'user_message', entry });
+				i++;
 			} else if (entry.event_type === 'message') {
 				result.push({ kind: 'message', entry });
 				i++;
@@ -154,7 +158,16 @@
 		</div>
 	{:else}
 		{#each groups as group, groupIndex (groupIndex)}
-			{#if group.kind === 'message'}
+			{#if group.kind === 'user_message'}
+				<!-- User message: right-aligned bubble -->
+				<div class="px-2 flex justify-end">
+					<div class="max-w-[85%] bg-primary/15 rounded-2xl rounded-br-sm px-3 py-2 border border-primary/20">
+						<p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{group.entry.content}</p>
+						<span class="text-[10px] text-muted-foreground/60 mt-1 block text-right">{formatTime(group.entry.timestamp)}</span>
+					</div>
+				</div>
+
+			{:else if group.kind === 'message'}
 				<!-- Message: clean readable text -->
 				<div class="px-2">
 					<p class="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">{group.entry.content}</p>
