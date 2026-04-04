@@ -92,6 +92,7 @@ pub fn run() {
             sessions::session_respond,
             sessions::session_retry,
             sessions::session_stop,
+            sessions::session_list_files,
             sessions::session_run_test,
             sessions::session_get_logs,
             sessions::session_cleanup,

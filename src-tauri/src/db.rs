@@ -528,6 +528,20 @@ pub fn update_session_status(
     Ok(())
 }
 
+/// Store the Claude CLI session ID so we can resume the conversation later.
+pub fn update_session_cli_id(
+    conn: &Connection,
+    session_db_id: i64,
+    cli_session_id: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sessions SET session_id = ?1 WHERE id = ?2",
+        params![cli_session_id, session_db_id],
+    )
+    .map_err(|e| format!("Failed to update session CLI ID: {e}"))?;
+    Ok(())
+}
+
 pub fn get_active_session(
     conn: &Connection,
     repo_id: i64,

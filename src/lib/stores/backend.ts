@@ -269,6 +269,11 @@ export async function setSelectedRepoId(repoId: number): Promise<void> {
 	return invoke('set_selected_repo_id', { repoId });
 }
 
+// Session Files
+export async function listSessionFiles(sessionId: string): Promise<string[]> {
+	return invoke('session_list_files', { sessionId });
+}
+
 // Session Logs
 export async function fetchSessionLogs(sessionId: string): Promise<SessionLogEntry[]> {
 	return invoke('session_get_logs', { sessionId });
