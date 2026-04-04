@@ -7,7 +7,7 @@
 		session: Session | null;
 		issue: Issue;
 		repoConfig: RepoConfig | null;
-		onNewSession: () => void;
+		onNewSession: (message?: string) => void;
 		onTest: () => void;
 		onMerge: () => void;
 		onCopy: () => void;
@@ -205,7 +205,7 @@
 		if (session) {
 			await backend.respondToSession(session.id, message);
 		} else {
-			onNewSession();
+			onNewSession(message);
 		}
 	}
 

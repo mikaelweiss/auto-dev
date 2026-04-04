@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use tauri::Manager;
@@ -5,6 +6,7 @@ use tauri::Manager;
 mod db;
 mod github;
 mod polling;
+mod sdk_types;
 mod sessions;
 mod sleep;
 mod types;
@@ -13,6 +15,8 @@ mod worktrees;
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     pub http_client: reqwest::Client,
+    /// Maps session DB id -> child process PID for active Claude sessions.
+    pub active_pids: Mutex<HashMap<i64, u32>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +32,7 @@ pub fn run() {
             let state = AppState {
                 db: Mutex::new(conn),
                 http_client: reqwest::Client::new(),
+                active_pids: Mutex::new(HashMap::new()),
             };
 
             // Clean up any sessions left running from a previous app launch

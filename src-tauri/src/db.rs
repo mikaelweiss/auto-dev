@@ -188,6 +188,24 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         eprintln!("[DB] hidden column migration complete");
     }
 
+    // Migration: add cost_usd column to sessions
+    let has_cost: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("cost_usd"))
+        .unwrap_or(false);
+
+    if !has_cost {
+        eprintln!("[DB] Migrating sessions table: adding cost_usd column");
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN cost_usd REAL;")
+            .map_err(|e| format!("Failed to add cost_usd column: {e}"))?;
+        eprintln!("[DB] cost_usd column migration complete");
+    }
+
     // Migration: add model and effort columns to agent_prompts
     let has_model: bool = conn
         .query_row(
@@ -610,10 +628,11 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
         hidden: row.get::<_, i64>(10).unwrap_or(0) != 0,
+        cost_usd: row.get(11).unwrap_or(None),
     })
 }
 
-const SESSION_COLS: &str = "id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, hidden";
+const SESSION_COLS: &str = "id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, hidden, cost_usd";
 
 pub fn get_active_session(
     conn: &Connection,

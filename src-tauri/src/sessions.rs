@@ -1,10 +1,10 @@
 use std::process::Stdio;
 
-use serde_json::Value;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::db;
+use crate::sdk_types::CliMessage;
 use crate::types::*;
 use crate::worktrees;
 use crate::AppState;
@@ -19,10 +19,7 @@ fn find_claude() -> Result<String, String> {
         }
     }
 
-    for path in &[
-        "/usr/local/bin/claude",
-        "/opt/homebrew/bin/claude",
-    ] {
+    for path in &["/usr/local/bin/claude", "/opt/homebrew/bin/claude"] {
         if std::path::Path::new(path).exists() {
             return Ok(path.to_string());
         }
@@ -44,9 +41,7 @@ fn find_claude() -> Result<String, String> {
 // ── Tauri Commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn session_list(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Session>, String> {
+pub async fn session_list(state: tauri::State<'_, AppState>) -> Result<Vec<Session>, String> {
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
     let sessions = db::get_all_sessions(&db)?;
     Ok(sessions)
@@ -97,6 +92,7 @@ pub async fn session_start(
     app_handle: tauri::AppHandle,
     repo_id: i64,
     issue_number: i64,
+    message: Option<String>,
 ) -> Result<Session, String> {
     // Prevent duplicate sessions
     {
@@ -116,12 +112,13 @@ pub async fn session_start(
         issue_number,
         stage: "spec".to_string(),
         worktree_path: None,
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        session_id: None,
         status: "initializing".to_string(),
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
         hidden: false,
+        cost_usd: None,
     };
 
     let session_db_id = {
@@ -166,7 +163,11 @@ pub async fn session_start(
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         match db::get_prompt(&db, "spec")? {
             Some(p) => (p.prompt_text, p.model, p.effort),
-            None => ("Analyze this issue and write a spec.".to_string(), "haiku".to_string(), "high".to_string()),
+            None => (
+                "Analyze this issue and write a spec.".to_string(),
+                "haiku".to_string(),
+                "high".to_string(),
+            ),
         }
     };
 
@@ -175,7 +176,9 @@ pub async fn session_start(
         db::get_setting(&db, &format!("repo_{repo_id}_path"))?
     } {
         Some(p) => p,
-        None => fail_session!("Repository local path not configured. Set it in Settings > Repository.".to_string()),
+        None => fail_session!(
+            "Repository local path not configured. Set it in Settings > Repository.".to_string()
+        ),
     };
 
     // ── Create worktree ──
@@ -212,7 +215,8 @@ pub async fn session_start(
         db.execute(
             "UPDATE sessions SET worktree_path = ?1 WHERE id = ?2",
             rusqlite::params![worktree_path, session_db_id],
-        ).map_err(|e| format!("Failed to update worktree path: {e}"))?;
+        )
+        .map_err(|e| format!("Failed to update worktree path: {e}"))?;
     }
     emit_session_status(&app_handle, &session);
 
@@ -220,7 +224,11 @@ pub async fn session_start(
     let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        let mode = if settings.bypass_permissions {
+            "bypassPermissions".to_string()
+        } else {
+            "auto".to_string()
+        };
         (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
@@ -230,13 +238,22 @@ pub async fn session_start(
     let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
     let name = repo.name.clone();
-    let user_prompt = format!(
-        "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
-         Follow the spec process: check for an existing spec in the issue comments, \
-         explore the codebase, and produce or update the spec. \
-         Use `gh` CLI for all GitHub interactions (comments, labels). \
-         The repo is {owner}/{name} and the issue number is {issue_number}."
-    );
+    let user_prompt = if let Some(ref msg) = message {
+        msg.clone()
+    } else {
+        format!(
+            "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
+             Follow the spec process: check for an existing spec in the issue comments, \
+             explore the codebase, and produce or update the spec. \
+             Use `gh` CLI for all GitHub interactions (comments, labels). \
+             The repo is {owner}/{name} and the issue number is {issue_number}."
+        )
+    };
+
+    // Emit user message to the log if this is a user-typed message
+    if message.is_some() {
+        emit_user_message(&app_handle, session_db_id, &user_prompt);
+    }
 
     tokio::spawn(async move {
         let result = run_claude_session(
@@ -257,6 +274,9 @@ pub async fn session_start(
             Ok(res) => {
                 if let Some(ref cli_id) = res.cli_session_id {
                     save_cli_session_id(&app, session_db_id, cli_id);
+                }
+                if let Some(cost) = res.cost_usd {
+                    save_session_cost(&app, session_db_id, cost);
                 }
                 update_status_via_app(&app, session_db_id, "completed", None);
 
@@ -323,7 +343,11 @@ pub async fn session_start_implement(
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         match db::get_prompt(&db, "implement")? {
             Some(p) => (p.prompt_text, p.model, p.effort),
-            None => ("Implement the feature as specified.".to_string(), "haiku".to_string(), "high".to_string()),
+            None => (
+                "Implement the feature as specified.".to_string(),
+                "haiku".to_string(),
+                "high".to_string(),
+            ),
         }
     };
 
@@ -341,12 +365,13 @@ pub async fn session_start_implement(
         issue_number,
         stage: "implement".to_string(),
         worktree_path: Some(worktree_path.clone()),
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        session_id: None,
         status: "running".to_string(),
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
         hidden: false,
+        cost_usd: None,
     };
 
     let session_db_id = {
@@ -365,7 +390,11 @@ pub async fn session_start_implement(
     let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        let mode = if settings.bypass_permissions {
+            "bypassPermissions".to_string()
+        } else {
+            "auto".to_string()
+        };
         (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
@@ -396,6 +425,9 @@ pub async fn session_start_implement(
             Ok(res) => {
                 if let Some(ref cli_id) = res.cli_session_id {
                     save_cli_session_id(&app, session_db_id, cli_id);
+                }
+                if let Some(cost) = res.cost_usd {
+                    save_session_cost(&app, session_db_id, cost);
                 }
                 update_status_via_app(&app, session_db_id, "completed", None);
 
@@ -471,7 +503,11 @@ pub async fn session_start_review(
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         match db::get_prompt(&db, "review")? {
             Some(p) => (p.prompt_text, p.model, p.effort),
-            None => ("Review the diff and fix any issues.".to_string(), "haiku".to_string(), "high".to_string()),
+            None => (
+                "Review the diff and fix any issues.".to_string(),
+                "haiku".to_string(),
+                "high".to_string(),
+            ),
         }
     };
 
@@ -491,12 +527,13 @@ pub async fn session_start_review(
         issue_number,
         stage: "review".to_string(),
         worktree_path: Some(worktree_path.clone()),
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        session_id: None,
         status: "running".to_string(),
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
         hidden: false,
+        cost_usd: None,
     };
 
     let session_db_id = {
@@ -515,7 +552,11 @@ pub async fn session_start_review(
     let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        let mode = if settings.bypass_permissions {
+            "bypassPermissions".to_string()
+        } else {
+            "auto".to_string()
+        };
         (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
@@ -526,9 +567,7 @@ pub async fn session_start_review(
     let name = repo.name.clone();
     let _base_branch = repo.base_branch.clone();
     let branch_prefix = repo.branch_prefix.clone();
-    let user_prompt = format!(
-        "Review this diff and fix any issues:\n\n```diff\n{diff}\n```"
-    );
+    let user_prompt = format!("Review this diff and fix any issues:\n\n```diff\n{diff}\n```");
 
     tokio::spawn(async move {
         let result = run_claude_session(
@@ -549,6 +588,9 @@ pub async fn session_start_review(
             Ok(res) => {
                 if let Some(ref cli_id) = res.cli_session_id {
                     save_cli_session_id(&app, session_db_id, cli_id);
+                }
+                if let Some(cost) = res.cost_usd {
+                    save_session_cost(&app, session_db_id, cost);
                 }
                 // Push and create PR
                 let branch_name = format!("{branch_prefix}issue-{issue_number}");
@@ -621,9 +663,7 @@ pub async fn session_respond(
     let (worktree_path, stage, cli_session_id) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let mut stmt = db
-            .prepare(
-                "SELECT worktree_path, stage, session_id FROM sessions WHERE id = ?1",
-            )
+            .prepare("SELECT worktree_path, stage, session_id FROM sessions WHERE id = ?1")
             .map_err(|e| format!("Query error: {e}"))?;
 
         stmt.query_row(rusqlite::params![session_db_id], |row| {
@@ -667,10 +707,15 @@ pub async fn session_respond(
     // Notify the frontend about the resumed session
     update_status_via_app(&app_handle, session_db_id, "running", None);
 
+    // Emit the user's message to the log
+    emit_user_message(&app_handle, session_db_id, &message);
+
     // Enable sleep prevention if this is the first active session
     let sleep_enabled = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+        db::get_app_settings(&db)
+            .map(|s| s.sleep_prevention)
+            .unwrap_or(true)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
@@ -696,6 +741,9 @@ pub async fn session_respond(
             Ok(res) => {
                 if let Some(ref cli_id) = res.cli_session_id {
                     save_cli_session_id(&app, session_db_id, cli_id);
+                }
+                if let Some(cost) = res.cost_usd {
+                    save_session_cost(&app, session_db_id, cost);
                 }
                 update_status_via_app(&app, session_db_id, "completed", None);
 
@@ -760,7 +808,7 @@ pub async fn session_retry(
 
     // Restart the appropriate stage
     match stage.as_str() {
-        "spec" => session_start(state, app_handle, repo_id, issue_number).await,
+        "spec" => session_start(state, app_handle, repo_id, issue_number, None).await,
         "implement" => session_start_implement(state, app_handle, repo_id, issue_number).await,
         "review" => session_start_review(state, app_handle, repo_id, issue_number).await,
         _ => Err(format!("Unknown stage: {stage}")),
@@ -769,13 +817,48 @@ pub async fn session_retry(
 
 #[tauri::command]
 pub async fn session_stop(
-    _state: tauri::State<'_, AppState>,
-    _session_id: String,
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    session_id: String,
 ) -> Result<(), String> {
-    // In a full implementation, we'd track child PIDs and kill them.
-    // For now, this is a placeholder that the frontend can call.
-    // The spawned tokio tasks will complete on their own.
-    // TODO: Track child process handles in AppState for proper cancellation
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+
+    // Look up the PID and kill the process
+    let pid = {
+        let pids = state
+            .active_pids
+            .lock()
+            .map_err(|e| format!("PID lock: {e}"))?;
+        pids.get(&session_db_id).copied()
+    };
+
+    if let Some(pid) = pid {
+        // Send SIGTERM to the process group so child processes also die
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+
+        // Mark as completed — this is a user-initiated stop, not a failure
+        update_status_via_app(&app_handle, session_db_id, "completed", None);
+
+        let _ = app_handle.emit(
+            "session-log",
+            SessionLogEvent {
+                session_id: session_db_id.to_string(),
+                entry: SessionLogEntry {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    session_id: session_db_id.to_string(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    event_type: "status_change".to_string(),
+                    content: "Session stopped".to_string(),
+                },
+            },
+        );
+    }
+
     Ok(())
 }
 
@@ -911,9 +994,7 @@ pub async fn get_repo_path(
 }
 
 #[tauri::command]
-pub async fn get_selected_repo_id(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<i64>, String> {
+pub async fn get_selected_repo_id(state: tauri::State<'_, AppState>) -> Result<Option<i64>, String> {
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
     Ok(db::get_setting(&db, "selected_repo_id")?.and_then(|v| v.parse::<i64>().ok()))
 }
@@ -959,8 +1040,8 @@ pub async fn session_cleanup(
             .ok_or_else(|| "Repository local path not configured".to_string())?
     };
 
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     let slug = format!("issue-{issue_number}");
     let branch_name = format!("{}issue-{issue_number}", repo.branch_prefix);
     let worktree_path = std::path::Path::new(&home)
@@ -975,12 +1056,7 @@ pub async fn session_cleanup(
 
 // ── Internal Helpers ────────────────────────────────────────────────────
 
-fn update_status_via_app(
-    app: &tauri::AppHandle,
-    session_db_id: i64,
-    status: &str,
-    error: Option<&str>,
-) {
+fn update_status_via_app(app: &tauri::AppHandle, session_db_id: i64, status: &str, error: Option<&str>) {
     let state = app.state::<AppState>();
     let Ok(db) = state.db.lock() else { return };
     let _ = db::update_session_status(&db, session_db_id, status, error);
@@ -998,128 +1074,64 @@ fn save_cli_session_id(app: &tauri::AppHandle, session_db_id: i64, cli_session_i
     let _ = db::update_session_cli_id(&db, session_db_id, cli_session_id);
 }
 
-fn insert_log_via_app(
-    app: &tauri::AppHandle,
-    session_db_id: i64,
-    event_type: &str,
-    content: &str,
-) {
+/// Save the session cost to the database.
+fn save_session_cost(app: &tauri::AppHandle, session_db_id: i64, cost: f64) {
+    let state = app.state::<AppState>();
+    let Ok(db) = state.db.lock() else { return };
+    let _ = db.execute(
+        "UPDATE sessions SET cost_usd = ?1 WHERE id = ?2",
+        rusqlite::params![cost, session_db_id],
+    );
+}
+
+/// Emit a user message to the session log (both DB and frontend).
+fn emit_user_message(app: &tauri::AppHandle, session_db_id: i64, message: &str) {
+    insert_log_via_app(app, session_db_id, "user_message", message);
+    let _ = app.emit(
+        "session-log",
+        SessionLogEvent {
+            session_id: session_db_id.to_string(),
+            entry: SessionLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: session_db_id.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                event_type: "user_message".to_string(),
+                content: message.to_string(),
+            },
+        },
+    );
+}
+
+fn insert_log_via_app(app: &tauri::AppHandle, session_db_id: i64, event_type: &str, content: &str) {
     let state = app.state::<AppState>();
     let Ok(db) = state.db.lock() else { return };
     let _ = db::insert_session_log(&db, session_db_id, event_type, content);
 }
 
-// ── Internal: Parse Claude stream-json ───────────────────────────────────
-
-/// Parse a single line from Claude CLI's `--output-format stream-json`.
-/// Returns a vec of (event_type, content) pairs to emit. May return 0 or more entries.
-fn parse_stream_json_line(line: &str) -> Vec<(String, String)> {
-    let Ok(json) = serde_json::from_str::<Value>(line) else {
-        // Not JSON — emit as plain message
-        if !line.trim().is_empty() {
-            return vec![("message".to_string(), line.to_string())];
-        }
-        return vec![];
+/// Register an active PID so session_stop can kill it.
+fn register_pid(app: &tauri::AppHandle, session_db_id: i64, pid: u32) {
+    let state = app.state::<AppState>();
+    let Ok(mut pids) = state.active_pids.lock() else {
+        return;
     };
-
-    let raw_type = json["type"].as_str().unwrap_or("unknown");
-
-    match raw_type {
-        // System init events — not useful in the activity log
-        "system" | "user" | "rate_limit_event" => vec![],
-
-        // Assistant messages — may contain text and/or tool_use blocks
-        "assistant" => {
-            let mut entries = Vec::new();
-            if let Some(blocks) = json["message"]["content"].as_array() {
-                for block in blocks {
-                    let block_type = block["type"].as_str().unwrap_or("");
-                    match block_type {
-                        "text" => {
-                            if let Some(text) = block["text"].as_str() {
-                                if !text.trim().is_empty() {
-                                    entries.push(("message".to_string(), text.to_string()));
-                                }
-                            }
-                        }
-                        "tool_use" => {
-                            let name = block["name"].as_str().unwrap_or("tool");
-                            let input = &block["input"];
-                            let summary = format_tool_summary(name, input);
-                            entries.push(("tool_call".to_string(), summary));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            entries
-        }
-
-        // Tool results — skip (too verbose for the activity log)
-        "tool" => vec![],
-
-        // Final result
-        "result" => {
-            if let Some(result_text) = json["result"].as_str() {
-                if !result_text.trim().is_empty() {
-                    return vec![("message".to_string(), result_text.to_string())];
-                }
-            }
-            vec![]
-        }
-
-        // Fallback for unknown types — try common content fields
-        _ => {
-            let content = if let Some(text) = json["content"].as_str() {
-                text.to_string()
-            } else if let Some(result) = json["result"].as_str() {
-                result.to_string()
-            } else {
-                line.to_string()
-            };
-            if !content.trim().is_empty() {
-                vec![(raw_type.to_string(), content)]
-            } else {
-                vec![]
-            }
-        }
-    }
+    pids.insert(session_db_id, pid);
 }
 
-/// Format a human-readable summary for a tool call.
-fn format_tool_summary(name: &str, input: &Value) -> String {
-    match name {
-        "Read" | "Write" => {
-            let path = input["file_path"].as_str().unwrap_or("");
-            format!("{name}: {path}")
-        }
-        "Edit" => {
-            let path = input["file_path"].as_str().unwrap_or("");
-            format!("Edit: {path}")
-        }
-        "Bash" => {
-            let cmd = input["command"].as_str().unwrap_or("");
-            let truncated: String = cmd.chars().take(100).collect();
-            format!("Bash: {truncated}")
-        }
-        "Grep" => {
-            let pattern = input["pattern"].as_str().unwrap_or("");
-            format!("Grep: {pattern}")
-        }
-        "Glob" => {
-            let pattern = input["pattern"].as_str().unwrap_or("");
-            format!("Glob: {pattern}")
-        }
-        _ => name.to_string(),
-    }
+/// Remove a PID when the process exits.
+fn unregister_pid(app: &tauri::AppHandle, session_db_id: i64) {
+    let state = app.state::<AppState>();
+    let Ok(mut pids) = state.active_pids.lock() else {
+        return;
+    };
+    pids.remove(&session_db_id);
 }
 
 // ── Internal: Run Claude Session ────────────────────────────────────────
 
-/// Result from running a Claude session, including the captured CLI session ID.
+/// Result from running a Claude session.
 struct ClaudeSessionResult {
-    /// The Claude CLI session ID captured from the stream output, if available.
     cli_session_id: Option<String>,
+    cost_usd: Option<f64>,
 }
 
 async fn run_claude_session(
@@ -1161,9 +1173,23 @@ async fn run_claude_session(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // Create a new process group so we can kill all children together
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn claude: {e}"))?;
+
+    // Register the PID for cancellation support
+    if let Some(pid) = child.id() {
+        register_pid(app_handle, session_db_id, pid);
+    }
 
     let stdout = child
         .stdout
@@ -1173,29 +1199,33 @@ async fn run_claude_session(
 
     let mut reader = BufReader::new(stdout).lines();
     let mut cli_session_id: Option<String> = None;
+    let mut cost_usd: Option<f64> = None;
 
     while let Some(line) = reader
         .next_line()
         .await
         .map_err(|e| format!("Failed to read claude output: {e}"))?
     {
-        // Try to capture the Claude CLI session ID from system/result events
+        let msg = CliMessage::parse(&line);
+
+        // Capture and persist session ID as soon as we see it
         if cli_session_id.is_none() {
-            if let Ok(json) = serde_json::from_str::<Value>(&line) {
-                if let Some(sid) = json["session_id"].as_str() {
-                    cli_session_id = Some(sid.to_string());
-                }
+            if let Some(sid) = msg.session_id() {
+                cli_session_id = Some(sid.to_string());
+                save_cli_session_id(app_handle, session_db_id, sid);
             }
         }
 
-        // Parse Claude CLI stream-json events into (event_type, content) pairs
-        let entries = parse_stream_json_line(&line);
+        // Capture cost from result messages
+        if let CliMessage::Result(ref result) = msg {
+            cost_usd = result.total_cost_usd;
+        }
 
-        for (event_type, content) in entries {
-            // Persist log to DB
-            insert_log_via_app(app_handle, session_db_id, &event_type, &content);
+        // Convert to log entries and emit
+        let entries = msg.to_log_entries();
+        for entry in entries {
+            insert_log_via_app(app_handle, session_db_id, &entry.event_type, &entry.content);
 
-            // Emit log event to frontend
             let _ = app_handle.emit(
                 "session-log",
                 SessionLogEvent {
@@ -1204,18 +1234,31 @@ async fn run_claude_session(
                         id: uuid::Uuid::new_v4().to_string(),
                         session_id: session_db_id.to_string(),
                         timestamp: chrono::Utc::now().to_rfc3339(),
-                        event_type,
-                        content,
+                        event_type: entry.event_type,
+                        content: entry.content,
                     },
                 },
             );
         }
     }
 
+    // Unregister the PID now that the process has exited
+    unregister_pid(app_handle, session_db_id);
+
     let status = child
         .wait()
         .await
         .map_err(|e| format!("Failed to wait for claude: {e}"))?;
+
+    // Exit code 143 = SIGTERM (128+15), meaning user stopped the session.
+    // Don't treat this as a failure.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if status.signal() == Some(libc::SIGTERM) {
+            return Ok(ClaudeSessionResult { cli_session_id, cost_usd });
+        }
+    }
 
     if !status.success() {
         let mut stderr_output = String::new();
@@ -1236,5 +1279,6 @@ async fn run_claude_session(
 
     Ok(ClaudeSessionResult {
         cli_session_id,
+        cost_usd,
     })
 }
