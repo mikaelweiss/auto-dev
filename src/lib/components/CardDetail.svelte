@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { selectedIssue } from '$lib/stores/ui';
-	import { sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
+	import { sessions, sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
-	import { getColumnForIssue } from '$lib/types';
 	import type { Session } from '$lib/types';
-	import { X, ExternalLink, Play, GitMerge, Send, Plus, Copy, Check as CheckIcon } from 'lucide-svelte';
+	import { X, ExternalLink, Plus, Info, History } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
+	import ChatInput from './ChatInput.svelte';
 
 	let issue = $derived($selectedIssue);
 	let visible = $derived(issue !== null);
@@ -16,31 +16,49 @@
 	);
 	let sessionKey = $derived(repoConfig && issue ? `${repoConfig.id}:${issue.number}` : null);
 	let allSessions = $derived(sessionKey ? $sessionsByIssue.get(sessionKey) ?? [] : []);
-	let column = $derived(issue ? getColumnForIssue(issue) : null);
 
 	let selectedSessionId: string | null = $state(null);
+	let showDetails = $state(false);
+	let editingBody = $state(false);
+	let bodyDraft = $state('');
+	let confirmHideSessionId: string | null = $state(null);
+	let showHistory = $state(false);
+	let hiddenSessions: Session[] = $state([]);
+	let historyLoading = $state(false);
 
 	// Auto-select the most recent session, or follow new sessions as they appear
+	let prevSessionCount = 0;
 	$effect(() => {
 		if (allSessions.length > 0) {
 			const ids = new Set(allSessions.map((s) => s.id));
 			if (!selectedSessionId || !ids.has(selectedSessionId)) {
 				selectedSessionId = allSessions[0].id;
+			} else if (allSessions.length > prevSessionCount && prevSessionCount > 0) {
+				const newest = allSessions[0];
+				if (
+					newest.status === 'running' ||
+					newest.status === 'initializing' ||
+					newest.status === 'setup'
+				) {
+					selectedSessionId = newest.id;
+				}
 			}
 		} else {
 			selectedSessionId = null;
 		}
+		prevSessionCount = allSessions.length;
 	});
 
 	// Reset when issue changes
 	$effect(() => {
 		if (issue) {
 			selectedSessionId = null;
-			editingTitle = false;
+			showDetails = false;
 			editingBody = false;
-			titleDraft = issue.title;
 			bodyDraft = issue.body;
-			blockResponse = '';
+			showHistory = false;
+			confirmHideSessionId = null;
+			hiddenSessions = [];
 		}
 	});
 
@@ -48,11 +66,68 @@
 		allSessions.find((s) => s.id === selectedSessionId) ?? null
 	);
 
-	let editingTitle = $state(false);
-	let titleDraft = $state('');
-	let editingBody = $state(false);
-	let bodyDraft = $state('');
-	let blockResponse = $state('');
+	function timeAgo(dateStr: string): string {
+		const now = Date.now();
+		const then = new Date(dateStr).getTime();
+		const diffMs = now - then;
+		const minutes = Math.floor(diffMs / 60000);
+		if (minutes < 1) return 'just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	}
+
+	function handleHideSession(sessionId: string) {
+		const sess = allSessions.find((s) => s.id === sessionId);
+		if (
+			sess &&
+			(sess.status === 'running' || sess.status === 'initializing' || sess.status === 'setup')
+		) {
+			confirmHideSessionId = sessionId;
+			return;
+		}
+		backend.hideSession(sessionId);
+		sessions.update((all) => all.map((s) => (s.id === sessionId ? { ...s, hidden: true } : s)));
+		if (selectedSessionId === sessionId) {
+			const remaining = allSessions.filter((s) => s.id !== sessionId);
+			selectedSessionId = remaining.length > 0 ? remaining[0].id : null;
+		}
+	}
+
+	async function confirmHideRunningSession() {
+		if (!confirmHideSessionId) return;
+		const idToHide = confirmHideSessionId;
+		await backend.stopSession(idToHide);
+		await backend.hideSession(idToHide);
+		sessions.update((all) => all.map((s) => (s.id === idToHide ? { ...s, hidden: true } : s)));
+		confirmHideSessionId = null;
+		if (selectedSessionId === idToHide) {
+			const remaining = allSessions.filter((s) => s.id !== idToHide);
+			selectedSessionId = remaining.length > 0 ? remaining[0].id : null;
+		}
+	}
+
+	async function handleRestoreSession(sessionId: string) {
+		await backend.unhideSession(sessionId);
+		sessions.update((all) => all.map((s) => (s.id === sessionId ? { ...s, hidden: false } : s)));
+		hiddenSessions = hiddenSessions.filter((s) => s.id !== sessionId);
+		selectedSessionId = sessionId;
+	}
+
+	async function toggleHistory() {
+		showHistory = !showHistory;
+		if (showHistory && repoConfig && issue) {
+			historyLoading = true;
+			try {
+				hiddenSessions = await backend.listHiddenSessions(repoConfig.id, issue.number);
+			} catch {
+				hiddenSessions = [];
+			}
+			historyLoading = false;
+		}
+	}
 
 	function close() {
 		selectedIssue.set(null);
@@ -112,13 +187,6 @@
 		}
 	}
 
-	function handleRespond() {
-		if (activeSession && blockResponse.trim()) {
-			backend.respondToSession(activeSession.id, blockResponse.trim());
-			blockResponse = '';
-		}
-	}
-
 	function handleNewSession() {
 		if (repoConfig && issue) {
 			backend.startSession(repoConfig.id, issue.number);
@@ -138,7 +206,9 @@
 			if (toolBatch.length === 1) {
 				parts.push(`  [tool] ${toolBatch[0]}`);
 			} else {
-				parts.push(`  [${toolBatch.length} tools] ${toolBatch.map(t => t.split(':')[0].trim()).join(', ')}`);
+				parts.push(
+					`  [${toolBatch.length} tools] ${toolBatch.map((t) => t.split(':')[0].trim()).join(', ')}`
+				);
 			}
 			toolBatch = [];
 		}
@@ -163,7 +233,9 @@
 
 		navigator.clipboard.writeText(parts.join('\n\n')).then(() => {
 			copied = true;
-			setTimeout(() => { copied = false; }, 2000);
+			setTimeout(() => {
+				copied = false;
+			}, 2000);
 		});
 	}
 
@@ -190,30 +262,25 @@
 			class="relative w-full max-w-lg bg-background border-l border-border shadow-2xl flex flex-col h-full animate-slide-in"
 		>
 			<!-- Header -->
-			<div class="flex items-start justify-between p-4 border-b border-border">
+			<div class="flex items-start justify-between px-4 pt-4 pb-3 shrink-0">
 				<div class="flex-1 min-w-0 pr-4">
-					{#if editingTitle}
-						<input
-							class="w-full text-lg font-semibold bg-transparent border-b border-ring outline-none text-foreground"
-							bind:value={titleDraft}
-							onblur={() => { editingTitle = false; }}
-							onkeydown={(e) => { if (e.key === 'Enter') editingTitle = false; if (e.key === 'Escape') { titleDraft = issue.title; editingTitle = false; } }}
-						/>
-					{:else}
-						<button
-							type="button"
-							class="text-lg font-semibold text-foreground cursor-text hover:bg-muted/50 rounded px-1 -mx-1 text-left bg-transparent border-none outline-none w-full"
-							onclick={() => { editingTitle = true; titleDraft = issue.title; }}
-						>
-							{issue.title}
-						</button>
-					{/if}
-					<div class="flex items-center gap-2 mt-1">
-						<span class="text-sm text-muted-foreground">#{issue.number}</span>
-						<span class="text-sm text-muted-foreground">{issue.repo_owner}/{issue.repo_name}</span>
-					</div>
+					<h2 class="text-lg font-semibold text-foreground leading-tight">
+						{issue.title}
+					</h2>
+					<span class="text-sm text-muted-foreground block mt-0.5">
+						#{issue.number} · {issue.repo_owner}/{issue.repo_name}
+					</span>
 				</div>
 				<div class="flex items-center gap-1">
+					<button
+						class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors {showDetails ? 'bg-muted text-foreground' : ''}"
+						onclick={() => {
+							showDetails = !showDetails;
+						}}
+						title="Issue details"
+					>
+						<Info class="h-4 w-4" />
+					</button>
 					<button
 						class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
 						onclick={openInBrowser}
@@ -231,165 +298,187 @@
 				</div>
 			</div>
 
-			<!-- Content -->
-			<div class="flex-1 overflow-y-auto p-4 space-y-5 min-h-0">
-				<!-- Assignee -->
-				<div class="flex items-center gap-3">
-					<span class="text-xs font-medium uppercase tracking-wider text-muted-foreground w-20">Assignee</span>
-					{#if issue.assignee}
-						<div class="flex items-center gap-2">
-							<img src={issue.assignee.avatar_url} alt={issue.assignee.login} class="h-6 w-6 rounded-full ring-1 ring-border" />
-							<span class="text-sm text-foreground">{issue.assignee.login}</span>
-						</div>
-					{:else}
-						<span class="text-sm text-muted-foreground italic">Unassigned</span>
-					{/if}
-				</div>
-
-				<!-- Body -->
-				<div class="space-y-2">
-					<div class="flex items-center justify-between">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Description</h3>
-						<button
-							class="text-xs text-muted-foreground hover:text-foreground transition-colors"
-							onclick={() => { editingBody = !editingBody; bodyDraft = issue.body; }}
-						>
-							{editingBody ? 'Cancel' : 'Edit'}
-						</button>
-					</div>
-					{#if editingBody}
-						<textarea
-							class="w-full h-40 bg-muted rounded-lg p-3 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-none"
-							bind:value={bodyDraft}
-						></textarea>
-					{:else}
-						<div class="text-sm text-foreground/90 whitespace-pre-wrap bg-muted/40 rounded-lg p-3 min-h-[4rem]">
-							{issue.body || 'No description provided.'}
-						</div>
-					{/if}
-				</div>
-
-				<!-- Session tabs -->
-				<div class="space-y-2 flex flex-col flex-1 min-h-[200px]">
-					<div class="flex items-center justify-between">
-						<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sessions</h3>
-						<button
-							class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-							onclick={handleNewSession}
-							title="Start new session"
-						>
-							<Plus class="h-3.5 w-3.5" />
-							New
-						</button>
+			<!-- Issue details (hidden by default) -->
+			{#if showDetails}
+				<div class="shrink-0 px-4 pb-3 border-b border-border space-y-3">
+					<div class="flex items-center gap-3">
+						<span class="text-xs text-muted-foreground w-20">Assignee</span>
+						{#if issue.assignee}
+							<div class="flex items-center gap-2">
+								<img
+									src={issue.assignee.avatar_url}
+									alt={issue.assignee.login}
+									class="h-5 w-5 rounded-full ring-1 ring-border"
+								/>
+								<span class="text-sm text-foreground">{issue.assignee.login}</span>
+							</div>
+						{:else}
+							<span class="text-sm text-muted-foreground">Unassigned</span>
+						{/if}
 					</div>
 
-					{#if allSessions.length > 0}
-						<!-- Tab bar -->
-						<div class="flex gap-1 overflow-x-auto pb-1">
-							{#each allSessions as sess, i (sess.id)}
+					<div class="space-y-1.5">
+						<div class="flex items-center justify-between">
+							<span class="text-xs text-muted-foreground">Description</span>
+							<button
+								class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+								onclick={() => {
+									editingBody = !editingBody;
+									bodyDraft = issue.body;
+								}}
+							>
+								{editingBody ? 'Cancel' : 'Edit'}
+							</button>
+						</div>
+						{#if editingBody}
+							<textarea
+								class="w-full h-32 bg-muted rounded-lg p-3 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-none"
+								bind:value={bodyDraft}
+							></textarea>
+						{:else}
+							<div
+								class="text-sm text-foreground/90 whitespace-pre-wrap bg-muted/40 rounded-lg p-3 max-h-[6rem] overflow-y-auto"
+							>
+								{issue.body || 'No description provided.'}
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Session tabs -->
+				<div class="shrink-0 border-b border-border">
+					<div class="px-4 py-2 flex items-center gap-2">
+						<div class="flex gap-1 flex-1 overflow-x-auto">
+							{#each allSessions as sess (sess.id)}
 								<button
-									class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
+									class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
 										{sess.id === selectedSessionId
-											? 'bg-muted text-foreground'
-											: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
-									onclick={() => { selectedSessionId = sess.id; }}
+										? 'bg-muted text-foreground'
+										: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
+									onclick={() => {
+										selectedSessionId = sess.id;
+									}}
 								>
 									<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
 									{sess.stage}{allSessions.filter((s) => s.stage === sess.stage).length > 1
 										? ` #${allSessions.filter((s) => s.stage === sess.stage).indexOf(sess) + 1}`
 										: ''}
+									{#if sess.id === selectedSessionId}
+										<span class="text-muted-foreground font-normal ml-0.5">
+											{elapsedTime(sess.started_at, sess.completed_at)}
+										</span>
+									{/if}
+									<span
+										role="button"
+										tabindex="0"
+										class="ml-0.5 p-0.5 rounded hover:bg-background/50 opacity-0 group-hover:opacity-100 transition-opacity"
+										onclick={(e) => { e.stopPropagation(); handleHideSession(sess.id); }}
+										onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleHideSession(sess.id); } }}
+										title="Close tab"
+									>
+										<X class="h-3 w-3" />
+									</span>
 								</button>
 							{/each}
 						</div>
+						<button
+							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+							onclick={handleNewSession}
+							title="New session"
+						>
+							<Plus class="h-3.5 w-3.5" />
+						</button>
+						<div class="relative">
+							<button
+								class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0 {showHistory ? 'bg-muted text-foreground' : ''}"
+								onclick={toggleHistory}
+								title="Session history"
+							>
+								<History class="h-3.5 w-3.5" />
+							</button>
 
-						<!-- Active session detail -->
-						{#if activeSession}
-							<div class="bg-muted rounded-lg p-3 space-y-1.5">
-								<div class="flex items-center justify-between">
-									<span class="text-sm text-foreground">Stage: <span class="font-medium">{activeSession.stage}</span></span>
-									<div class="flex items-center gap-1.5">
-										<button
-											class="p-1 rounded hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors"
-											onclick={handleCopyConversation}
-											title="Copy conversation"
-										>
-											{#if copied}
-												<CheckIcon class="h-3.5 w-3.5 text-green-400" />
-											{:else}
-												<Copy class="h-3.5 w-3.5" />
-											{/if}
-										</button>
-										<span class="text-xs px-2 py-0.5 rounded-full {activeSession.status === 'running' ? 'bg-green-500/20 text-green-400' : activeSession.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-muted-foreground/20 text-muted-foreground'}">
-											{activeSession.status}
-										</span>
-									</div>
-								</div>
-								<div class="text-xs text-muted-foreground">
-									Elapsed: {elapsedTime(activeSession.started_at, activeSession.completed_at)}
-								</div>
-								{#if activeSession.error_message}
-									<div class="text-sm text-red-400 bg-red-500/10 rounded p-2 mt-1">
-										{activeSession.error_message}
-									</div>
-								{/if}
-							</div>
-
-							<!-- Blocked response -->
-							{#if column === 'blocked'}
-								<div class="space-y-2">
-									<h3 class="text-xs font-medium uppercase tracking-wider text-orange-400">Blocked - Respond</h3>
-									<div class="flex gap-2">
-										<input
-											class="flex-1 bg-muted rounded-lg px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
-											placeholder="Type a response..."
-											bind:value={blockResponse}
-											onkeydown={(e) => { if (e.key === 'Enter') handleRespond(); }}
-										/>
-										<button
-											class="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-											onclick={handleRespond}
-											disabled={!blockResponse.trim()}
-										>
-											<Send class="h-4 w-4" />
-										</button>
-									</div>
+							<!-- History popover -->
+							{#if showHistory}
+								<div class="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-border bg-popover shadow-lg overflow-hidden">
+									{#if historyLoading}
+										<div class="px-3 py-2 text-xs text-muted-foreground">Loading...</div>
+									{:else if hiddenSessions.length === 0}
+										<div class="px-3 py-2 text-xs text-muted-foreground">No closed sessions.</div>
+									{:else}
+										<div class="max-h-48 overflow-y-auto">
+											{#each hiddenSessions as sess (sess.id)}
+												<div class="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/50 transition-colors">
+													<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
+													<span class="text-xs font-medium text-foreground flex-1 truncate">{sess.stage}</span>
+													<span class="text-[10px] text-muted-foreground whitespace-nowrap">{timeAgo(sess.started_at)}</span>
+													<button
+														class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+														onclick={() => handleRestoreSession(sess.id)}
+														title="Restore session"
+													>
+														<History class="h-3 w-3" />
+													</button>
+												</div>
+											{/each}
+										</div>
+									{/if}
 								</div>
 							{/if}
+						</div>
+					</div>
 
-							<!-- Review actions -->
-							{#if column === 'review'}
-								<div class="space-y-2">
-									<h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h3>
-									<div class="flex gap-2">
-										<button
-											class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
-											onclick={handleTest}
-										>
-											<Play class="h-4 w-4" />
-											Test
-										</button>
-										{#if issue.pull_request}
-											<button
-												class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
-												onclick={handleMerge}
-											>
-												<GitMerge class="h-4 w-4" />
-												Merge
-											</button>
-										{/if}
-									</div>
-								</div>
-							{/if}
-
-							<!-- Activity log -->
-							<AgentLog sessionId={activeSession.id} />
-						{/if}
-					{:else}
-						<div class="flex items-center justify-center h-full">
-							<p class="text-sm text-muted-foreground">No sessions yet.</p>
+					<!-- Confirmation bar for closing running sessions -->
+					{#if confirmHideSessionId}
+						<div class="border-t border-border bg-red-500/5 px-4 py-3 flex items-center gap-3">
+							<span class="text-xs text-foreground flex-1">Stop running agent and close tab?</span>
+							<button
+								class="px-2.5 py-1 rounded-md text-xs font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
+								onclick={confirmHideRunningSession}
+							>
+								Stop & close
+							</button>
+							<button
+								class="px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+								onclick={() => { confirmHideSessionId = null; }}
+							>
+								Cancel
+							</button>
 						</div>
 					{/if}
 				</div>
+
+			<!-- Error banner -->
+			{#if activeSession?.error_message}
+				<div class="shrink-0 px-4 py-2">
+					<div class="text-sm text-red-400 bg-red-500/10 rounded p-2">
+						{activeSession.error_message}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Agent log -->
+			{#if activeSession}
+				<div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+					<AgentLog sessionId={activeSession.id} />
+				</div>
+			{:else}
+				<div class="flex-1 flex items-center justify-center">
+					<p class="text-sm text-muted-foreground">Send a message to start a new session.</p>
+				</div>
+			{/if}
+
+			<!-- Chat input -->
+			<div class="shrink-0">
+				<ChatInput
+					session={activeSession}
+					{issue}
+					repoConfig={repoConfig ?? null}
+					onNewSession={handleNewSession}
+					onTest={handleTest}
+					onMerge={handleMerge}
+					onCopy={handleCopyConversation}
+				/>
 			</div>
 		</div>
 	</div>

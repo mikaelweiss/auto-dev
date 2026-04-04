@@ -42,6 +42,7 @@ export interface Session {
 	error_message: string | null;
 	started_at: string;
 	completed_at: string | null;
+	hidden: boolean;
 }
 
 export interface SessionLogEntry {
