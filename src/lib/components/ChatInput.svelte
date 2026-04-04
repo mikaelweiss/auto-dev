@@ -2,18 +2,22 @@
 	import { Paperclip, Send, Square, Slash, AtSign } from 'lucide-svelte';
 	import * as backend from '$lib/stores/backend';
 	import type { Session, Issue, RepoConfig } from '$lib/types';
+	import ModelPicker from './ModelPicker.svelte';
 
 	interface Props {
 		session: Session | null;
 		issue: Issue;
 		repoConfig: RepoConfig | null;
-		onNewSession: (message?: string) => void;
+		onNewSession: (message?: string, model?: string, effort?: string) => void;
 		onTest: () => void;
 		onMerge: () => void;
 		onCopy: () => void;
 	}
 
 	let { session, issue, repoConfig, onNewSession, onTest, onMerge, onCopy }: Props = $props();
+
+	let selectedModel = $state('claude-sonnet-4-6');
+	let selectedEffort = $state('high');
 
 	let input = $state('');
 	let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
@@ -203,9 +207,9 @@
 		input = '';
 		autoResize();
 		if (session) {
-			await backend.respondToSession(session.id, message);
+			await backend.respondToSession(session.id, message, selectedModel, selectedEffort);
 		} else {
-			onNewSession(message);
+			onNewSession(message, selectedModel, selectedEffort);
 		}
 	}
 
@@ -299,8 +303,13 @@
 		{/if}
 	</div>
 
-	<!-- Hint bar -->
-	<div class="flex items-center gap-3 px-4 pb-2 -mt-1">
+	<!-- Model picker & hint bar -->
+	<div class="flex items-center justify-between px-4 pb-2 -mt-1">
+		<ModelPicker
+			value={selectedModel}
+			onSelect={(v) => { selectedModel = v; }}
+			compact
+		/>
 		<span class="text-[10px] text-muted-foreground/50">
 			<kbd class="px-1 py-0.5 rounded bg-muted/60 text-[9px]">Enter</kbd> send
 			<kbd class="px-1 py-0.5 rounded bg-muted/60 text-[9px] ml-1">Shift+Enter</kbd> newline

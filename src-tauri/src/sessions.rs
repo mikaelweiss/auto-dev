@@ -1,42 +1,10 @@
-use std::process::Stdio;
-
 use tauri::{Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::db;
-use crate::sdk_types::CliMessage;
+use crate::provider::{self, SessionConfig};
 use crate::types::*;
 use crate::worktrees;
 use crate::AppState;
-
-/// Find the claude CLI binary.
-fn find_claude() -> Result<String, String> {
-    // Check ~/.local/bin first (common install location)
-    if let Ok(home) = std::env::var("HOME") {
-        let local_path = format!("{home}/.local/bin/claude");
-        if std::path::Path::new(&local_path).exists() {
-            return Ok(local_path);
-        }
-    }
-
-    for path in &["/usr/local/bin/claude", "/opt/homebrew/bin/claude"] {
-        if std::path::Path::new(path).exists() {
-            return Ok(path.to_string());
-        }
-    }
-
-    // Fallback: use `which`
-    let output = std::process::Command::new("/usr/bin/which")
-        .arg("claude")
-        .output()
-        .map_err(|e| format!("Failed to run which: {e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err("claude CLI not found. Install it from https://claude.ai/cli".to_string())
-    }
-}
 
 // ── Tauri Commands ──────────────────────────────────────────────────────
 
@@ -93,6 +61,8 @@ pub async fn session_start(
     repo_id: i64,
     issue_number: i64,
     message: Option<String>,
+    model_override: Option<String>,
+    effort_override: Option<String>,
 ) -> Result<Session, String> {
     // Prevent duplicate sessions
     {
@@ -104,6 +74,27 @@ pub async fn session_start(
             ));
         }
     }
+
+    // Get model config from stage defaults, with optional overrides
+    let (spec_prompt, stage_model, stage_effort) = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        match db::get_prompt(&db, "spec")? {
+            Some(p) => (p.prompt_text, p.model, p.effort),
+            None => (
+                "Analyze this issue and write a spec.".to_string(),
+                "claude-sonnet-4-6".to_string(),
+                "high".to_string(),
+            ),
+        }
+    };
+
+    let effective_model = model_override.unwrap_or(stage_model);
+    let effective_effort = effort_override.unwrap_or(stage_effort);
+
+    // Resolve provider from model
+    let effective_provider = provider::provider_for_model(&effective_model)
+        .unwrap_or(provider::ProviderKind::Claude);
+    let the_provider = provider::get_provider_by_kind(effective_provider);
 
     // ── Create session IMMEDIATELY so the card is pinned ──
     let session = Session {
@@ -119,6 +110,8 @@ pub async fn session_start(
         completed_at: None,
         hidden: false,
         cost_usd: None,
+        provider: effective_provider.as_str().to_string(),
+        model: effective_model.clone(),
     };
 
     let session_db_id = {
@@ -146,10 +139,9 @@ pub async fn session_start(
     }
 
     // ── Validate preconditions ──
-    let claude_path = match find_claude() {
-        Ok(p) => p,
-        Err(e) => fail_session!(e),
-    };
+    if let Err(e) = the_provider.find_binary() {
+        fail_session!(e);
+    }
 
     let repo = match {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -157,18 +149,6 @@ pub async fn session_start(
     } {
         Some(r) => r,
         None => fail_session!(format!("Repo {repo_id} not found")),
-    };
-
-    let (spec_prompt, stage_model, stage_effort) = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        match db::get_prompt(&db, "spec")? {
-            Some(p) => (p.prompt_text, p.model, p.effort),
-            None => (
-                "Analyze this issue and write a spec.".to_string(),
-                "haiku".to_string(),
-                "high".to_string(),
-            ),
-        }
     };
 
     let repo_path = match {
@@ -233,9 +213,8 @@ pub async fn session_start(
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
-    // Spawn claude in background
+    // Build user prompt
     let app = app_handle.clone();
-    let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
     let name = repo.name.clone();
     let user_prompt = if let Some(ref msg) = message {
@@ -255,26 +234,27 @@ pub async fn session_start(
         emit_user_message(&app_handle, session_db_id, &user_prompt);
     }
 
+    let wt_path = worktree_path.clone();
+    let model_for_spawn = effective_model;
+    let effort_for_spawn = effective_effort;
+    let provider_kind = effective_provider;
+
     tokio::spawn(async move {
-        let result = run_claude_session(
-            &claude_path,
-            &wt_path,
-            &spec_prompt,
-            &user_prompt,
-            &permission_mode,
-            &stage_model,
-            &stage_effort,
-            None,
-            session_db_id,
-            &app,
-        )
-        .await;
+        let prov = provider::get_provider_by_kind(provider_kind);
+        let config = SessionConfig {
+            worktree_path: wt_path,
+            system_prompt: spec_prompt,
+            user_prompt,
+            permission_mode,
+            model: model_for_spawn,
+            effort: effort_for_spawn,
+            resume_session_id: None,
+        };
+
+        let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
 
         match result {
             Ok(res) => {
-                if let Some(ref cli_id) = res.cli_session_id {
-                    save_cli_session_id(&app, session_db_id, cli_id);
-                }
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
@@ -320,8 +300,6 @@ pub async fn session_start_implement(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
-    let claude_path = find_claude()?;
-
     // Prevent duplicate sessions
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -333,11 +311,11 @@ pub async fn session_start_implement(
         }
     }
 
-    let repo = {
+    {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         db::get_repo_by_id(&db, repo_id)?
-            .ok_or_else(|| format!("Repo {repo_id} not found"))?
-    };
+            .ok_or_else(|| format!("Repo {repo_id} not found"))?;
+    }
 
     let (implement_prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -345,11 +323,16 @@ pub async fn session_start_implement(
             Some(p) => (p.prompt_text, p.model, p.effort),
             None => (
                 "Implement the feature as specified.".to_string(),
-                "haiku".to_string(),
+                "claude-sonnet-4-6".to_string(),
                 "high".to_string(),
             ),
         }
     };
+
+    let effective_provider = provider::provider_for_model(&stage_model)
+        .unwrap_or(provider::ProviderKind::Claude);
+    let the_provider = provider::get_provider_by_kind(effective_provider);
+    the_provider.find_binary()?;
 
     // Find existing worktree path from previous session
     let worktree_path = {
@@ -372,6 +355,8 @@ pub async fn session_start_implement(
         completed_at: None,
         hidden: false,
         cost_usd: None,
+        provider: effective_provider.as_str().to_string(),
+        model: stage_model.clone(),
     };
 
     let session_db_id = {
@@ -404,28 +389,26 @@ pub async fn session_start_implement(
     let user_prompt = format!(
         "GitHub Issue #{issue_number}\n\nImplement the feature described in the issue and spec. Write clean, well-tested code."
     );
-    let _base_branch = repo.base_branch.clone();
+    let provider_kind = effective_provider;
+    let model_for_spawn = stage_model;
+    let effort_for_spawn = stage_effort;
 
     tokio::spawn(async move {
-        let result = run_claude_session(
-            &claude_path,
-            &wt_path,
-            &implement_prompt,
-            &user_prompt,
-            &permission_mode,
-            &stage_model,
-            &stage_effort,
-            None,
-            session_db_id,
-            &app,
-        )
-        .await;
+        let prov = provider::get_provider_by_kind(provider_kind);
+        let config = SessionConfig {
+            worktree_path: wt_path,
+            system_prompt: implement_prompt,
+            user_prompt,
+            permission_mode,
+            model: model_for_spawn,
+            effort: effort_for_spawn,
+            resume_session_id: None,
+        };
+
+        let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
 
         match result {
             Ok(res) => {
-                if let Some(ref cli_id) = res.cli_session_id {
-                    save_cli_session_id(&app, session_db_id, cli_id);
-                }
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
@@ -480,8 +463,6 @@ pub async fn session_start_review(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
-    let claude_path = find_claude()?;
-
     // Prevent duplicate sessions
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -505,11 +486,16 @@ pub async fn session_start_review(
             Some(p) => (p.prompt_text, p.model, p.effort),
             None => (
                 "Review the diff and fix any issues.".to_string(),
-                "haiku".to_string(),
+                "claude-sonnet-4-6".to_string(),
                 "high".to_string(),
             ),
         }
     };
+
+    let effective_provider = provider::provider_for_model(&stage_model)
+        .unwrap_or(provider::ProviderKind::Claude);
+    let the_provider = provider::get_provider_by_kind(effective_provider);
+    the_provider.find_binary()?;
 
     let worktree_path = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -534,6 +520,8 @@ pub async fn session_start_review(
         completed_at: None,
         hidden: false,
         cost_usd: None,
+        provider: effective_provider.as_str().to_string(),
+        model: stage_model.clone(),
     };
 
     let session_db_id = {
@@ -565,30 +553,28 @@ pub async fn session_start_review(
     let wt_path = worktree_path.clone();
     let owner = repo.owner.clone();
     let name = repo.name.clone();
-    let _base_branch = repo.base_branch.clone();
     let branch_prefix = repo.branch_prefix.clone();
     let user_prompt = format!("Review this diff and fix any issues:\n\n```diff\n{diff}\n```");
+    let provider_kind = effective_provider;
+    let model_for_spawn = stage_model;
+    let effort_for_spawn = stage_effort;
 
     tokio::spawn(async move {
-        let result = run_claude_session(
-            &claude_path,
-            &wt_path,
-            &review_prompt,
-            &user_prompt,
-            &permission_mode,
-            &stage_model,
-            &stage_effort,
-            None,
-            session_db_id,
-            &app,
-        )
-        .await;
+        let prov = provider::get_provider_by_kind(provider_kind);
+        let config = SessionConfig {
+            worktree_path: wt_path.clone(),
+            system_prompt: review_prompt,
+            user_prompt,
+            permission_mode,
+            model: model_for_spawn,
+            effort: effort_for_spawn,
+            resume_session_id: None,
+        };
+
+        let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
 
         match result {
             Ok(res) => {
-                if let Some(ref cli_id) = res.cli_session_id {
-                    save_cli_session_id(&app, session_db_id, cli_id);
-                }
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
@@ -652,18 +638,18 @@ pub async fn session_respond(
     app_handle: tauri::AppHandle,
     session_id: String,
     message: String,
+    model_override: Option<String>,
+    effort_override: Option<String>,
 ) -> Result<(), String> {
-    let claude_path = find_claude()?;
-
     // Parse session DB id
     let session_db_id: i64 = session_id
         .parse()
         .map_err(|_| "Invalid session ID".to_string())?;
 
-    let (worktree_path, stage, cli_session_id) = {
+    let (worktree_path, stage, cli_session_id, session_provider, session_model) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let mut stmt = db
-            .prepare("SELECT worktree_path, stage, session_id FROM sessions WHERE id = ?1")
+            .prepare("SELECT worktree_path, stage, session_id, provider, model FROM sessions WHERE id = ?1")
             .map_err(|e| format!("Query error: {e}"))?;
 
         stmt.query_row(rusqlite::params![session_db_id], |row| {
@@ -671,6 +657,8 @@ pub async fn session_respond(
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3).unwrap_or_else(|_| "claude".to_string()),
+                row.get::<_, String>(4).unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
             ))
         })
         .map_err(|e| format!("Session not found: {e}"))?
@@ -678,13 +666,26 @@ pub async fn session_respond(
 
     let worktree_path = worktree_path.ok_or("No worktree for this session")?;
 
-    let (prompt, stage_model, stage_effort) = {
+    // Use session's model by default, allow override
+    let effective_model = model_override.unwrap_or(session_model);
+    let effective_provider = provider::provider_for_model(&effective_model)
+        .unwrap_or_else(|| {
+            provider::ProviderKind::from_str(&session_provider)
+                .unwrap_or(provider::ProviderKind::Claude)
+        });
+
+    let the_provider = provider::get_provider_by_kind(effective_provider);
+    the_provider.find_binary()?;
+
+    let (prompt, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         match db::get_prompt(&db, &stage)? {
-            Some(p) => (p.prompt_text, p.model, p.effort),
-            None => (String::new(), "haiku".to_string(), "high".to_string()),
+            Some(p) => (p.prompt_text, p.effort),
+            None => (String::new(), "high".to_string()),
         }
     };
+
+    let effective_effort = effort_override.unwrap_or(stage_effort);
 
     let permission_mode = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -721,27 +722,26 @@ pub async fn session_respond(
 
     let app = app_handle.clone();
     let wt_path = worktree_path;
+    let provider_kind = effective_provider;
+    let model_for_spawn = effective_model;
+    let effort_for_spawn = effective_effort;
 
     tokio::spawn(async move {
-        let result = run_claude_session(
-            &claude_path,
-            &wt_path,
-            &prompt,
-            &message,
-            &permission_mode,
-            &stage_model,
-            &stage_effort,
-            cli_session_id.as_deref(),
-            session_db_id,
-            &app,
-        )
-        .await;
+        let prov = provider::get_provider_by_kind(provider_kind);
+        let config = SessionConfig {
+            worktree_path: wt_path,
+            system_prompt: prompt,
+            user_prompt: message,
+            permission_mode,
+            model: model_for_spawn,
+            effort: effort_for_spawn,
+            resume_session_id: cli_session_id,
+        };
+
+        let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
 
         match result {
             Ok(res) => {
-                if let Some(ref cli_id) = res.cli_session_id {
-                    save_cli_session_id(&app, session_db_id, cli_id);
-                }
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
@@ -808,7 +808,7 @@ pub async fn session_retry(
 
     // Restart the appropriate stage
     match stage.as_str() {
-        "spec" => session_start(state, app_handle, repo_id, issue_number, None).await,
+        "spec" => session_start(state, app_handle, repo_id, issue_number, None, None, None).await,
         "implement" => session_start_implement(state, app_handle, repo_id, issue_number).await,
         "review" => session_start_review(state, app_handle, repo_id, issue_number).await,
         _ => Err(format!("Unknown stage: {stage}")),
@@ -967,11 +967,12 @@ pub async fn prompts_set(
     state: tauri::State<'_, AppState>,
     stage: String,
     prompt_text: String,
+    provider: String,
     model: String,
     effort: String,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-    db::update_prompt(&db, &stage, &prompt_text, &model, &effort)
+    db::update_prompt(&db, &stage, &prompt_text, &provider, &model, &effort)
 }
 
 #[tauri::command]
@@ -1067,13 +1068,6 @@ fn update_status_via_app(app: &tauri::AppHandle, session_db_id: i64, status: &st
     }
 }
 
-/// Save the captured Claude CLI session ID to the database.
-fn save_cli_session_id(app: &tauri::AppHandle, session_db_id: i64, cli_session_id: &str) {
-    let state = app.state::<AppState>();
-    let Ok(db) = state.db.lock() else { return };
-    let _ = db::update_session_cli_id(&db, session_db_id, cli_session_id);
-}
-
 /// Save the session cost to the database.
 fn save_session_cost(app: &tauri::AppHandle, session_db_id: i64, cost: f64) {
     let state = app.state::<AppState>();
@@ -1086,7 +1080,10 @@ fn save_session_cost(app: &tauri::AppHandle, session_db_id: i64, cost: f64) {
 
 /// Emit a user message to the session log (both DB and frontend).
 fn emit_user_message(app: &tauri::AppHandle, session_db_id: i64, message: &str) {
-    insert_log_via_app(app, session_db_id, "user_message", message);
+    let state = app.state::<AppState>();
+    if let Ok(db) = state.db.lock() {
+        let _ = db::insert_session_log(&db, session_db_id, "user_message", message);
+    }
     let _ = app.emit(
         "session-log",
         SessionLogEvent {
@@ -1102,183 +1099,21 @@ fn emit_user_message(app: &tauri::AppHandle, session_db_id: i64, message: &str) 
     );
 }
 
-fn insert_log_via_app(app: &tauri::AppHandle, session_db_id: i64, event_type: &str, content: &str) {
-    let state = app.state::<AppState>();
-    let Ok(db) = state.db.lock() else { return };
-    let _ = db::insert_session_log(&db, session_db_id, event_type, content);
-}
+// ── Models Command ──────────────────────────────────────────────────────
 
-/// Register an active PID so session_stop can kill it.
-fn register_pid(app: &tauri::AppHandle, session_db_id: i64, pid: u32) {
-    let state = app.state::<AppState>();
-    let Ok(mut pids) = state.active_pids.lock() else {
-        return;
-    };
-    pids.insert(session_db_id, pid);
-}
-
-/// Remove a PID when the process exits.
-fn unregister_pid(app: &tauri::AppHandle, session_db_id: i64) {
-    let state = app.state::<AppState>();
-    let Ok(mut pids) = state.active_pids.lock() else {
-        return;
-    };
-    pids.remove(&session_db_id);
-}
-
-// ── Internal: Run Claude Session ────────────────────────────────────────
-
-/// Result from running a Claude session.
-struct ClaudeSessionResult {
-    cli_session_id: Option<String>,
-    cost_usd: Option<f64>,
-}
-
-async fn run_claude_session(
-    claude_path: &str,
-    worktree_path: &str,
-    system_prompt: &str,
-    user_prompt: &str,
-    permission_mode: &str,
-    model: &str,
-    effort: &str,
-    resume_session_id: Option<&str>,
-    session_db_id: i64,
-    app_handle: &tauri::AppHandle,
-) -> Result<ClaudeSessionResult, String> {
-    let mut cmd = tokio::process::Command::new(claude_path);
-    cmd.args([
-        "-p",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--permission-mode",
-        permission_mode,
-        "--model",
-        model,
-        "--effort",
-        effort,
-    ]);
-
-    // Resume a previous conversation if we have a CLI session ID
-    if let Some(resume_id) = resume_session_id {
-        cmd.arg("--resume").arg(resume_id);
-    } else {
-        // Only set system prompt for new conversations; resumed ones already have it
-        cmd.arg("--system-prompt").arg(system_prompt);
-    }
-
-    cmd.arg(user_prompt)
-        .current_dir(worktree_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // Create a new process group so we can kill all children together
-    #[cfg(unix)]
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn claude: {e}"))?;
-
-    // Register the PID for cancellation support
-    if let Some(pid) = child.id() {
-        register_pid(app_handle, session_db_id, pid);
-    }
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture claude stdout")?;
-    let stderr = child.stderr.take();
-
-    let mut reader = BufReader::new(stdout).lines();
-    let mut cli_session_id: Option<String> = None;
-    let mut cost_usd: Option<f64> = None;
-
-    while let Some(line) = reader
-        .next_line()
-        .await
-        .map_err(|e| format!("Failed to read claude output: {e}"))?
-    {
-        let msg = CliMessage::parse(&line);
-
-        // Capture and persist session ID as soon as we see it
-        if cli_session_id.is_none() {
-            if let Some(sid) = msg.session_id() {
-                cli_session_id = Some(sid.to_string());
-                save_cli_session_id(app_handle, session_db_id, sid);
-            }
-        }
-
-        // Capture cost from result messages
-        if let CliMessage::Result(ref result) = msg {
-            cost_usd = result.total_cost_usd;
-        }
-
-        // Convert to log entries and emit
-        let entries = msg.to_log_entries();
-        for entry in entries {
-            insert_log_via_app(app_handle, session_db_id, &entry.event_type, &entry.content);
-
-            let _ = app_handle.emit(
-                "session-log",
-                SessionLogEvent {
-                    session_id: session_db_id.to_string(),
-                    entry: SessionLogEntry {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        session_id: session_db_id.to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        event_type: entry.event_type,
-                        content: entry.content,
-                    },
-                },
-            );
-        }
-    }
-
-    // Unregister the PID now that the process has exited
-    unregister_pid(app_handle, session_db_id);
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("Failed to wait for claude: {e}"))?;
-
-    // Exit code 143 = SIGTERM (128+15), meaning user stopped the session.
-    // Don't treat this as a failure.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if status.signal() == Some(libc::SIGTERM) {
-            return Ok(ClaudeSessionResult { cli_session_id, cost_usd });
-        }
-    }
-
-    if !status.success() {
-        let mut stderr_output = String::new();
-        if let Some(stderr) = stderr {
-            let mut stderr_reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = stderr_reader.next_line().await {
-                stderr_output.push_str(&line);
-                stderr_output.push('\n');
-            }
-        }
-        let detail = if stderr_output.trim().is_empty() {
-            format!("Claude exited with {status}")
-        } else {
-            format!("Claude exited with {status}: {}", stderr_output.trim())
-        };
-        return Err(detail);
-    }
-
-    Ok(ClaudeSessionResult {
-        cli_session_id,
-        cost_usd,
-    })
+#[tauri::command]
+pub async fn list_models() -> Result<serde_json::Value, String> {
+    let models: Vec<serde_json::Value> = provider::all_models()
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "display_name": m.display_name,
+                "provider": m.provider.as_str(),
+                "default_effort": m.default_effort,
+                "effort_levels": m.effort_levels,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!(models))
 }

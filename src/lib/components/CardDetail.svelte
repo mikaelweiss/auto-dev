@@ -236,19 +236,19 @@
 		promise.finally(() => { startingSession = false; });
 	}
 
-	function handleNewSession(message?: string) {
+	function handleNewSession(message?: string, model?: string, effort?: string) {
 		if (message) {
-			handleStartChat(message);
+			handleStartChat(message, model, effort);
 		} else {
 			handleStartPhase('spec');
 		}
 	}
 
-	function handleStartChat(message: string) {
+	function handleStartChat(message: string, model?: string, effort?: string) {
 		if (!repoConfig || !issue) return;
 		pendingNewTab = false;
 		startingSession = true;
-		backend.startSession(repoConfig.id, issue.number, message)
+		backend.startSession(repoConfig.id, issue.number, message, model, effort)
 			.finally(() => { startingSession = false; });
 	}
 

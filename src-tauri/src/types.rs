@@ -54,6 +54,18 @@ pub struct Session {
     pub hidden: bool,
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+fn default_provider() -> String {
+    "claude".to_string()
+}
+
+fn default_model() -> String {
+    "claude-sonnet-4-6".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -83,6 +95,7 @@ pub struct AgentPrompt {
     pub stage: String,
     pub prompt_text: String,
     pub is_default: bool,
+    pub provider: String,
     pub model: String,
     pub effort: String,
 }

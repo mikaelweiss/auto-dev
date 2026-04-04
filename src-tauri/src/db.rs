@@ -77,7 +77,8 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
             stage TEXT NOT NULL UNIQUE,
             prompt_text TEXT NOT NULL,
             is_default INTEGER NOT NULL DEFAULT 1,
-            model TEXT NOT NULL DEFAULT 'haiku',
+            provider TEXT NOT NULL DEFAULT 'claude',
+            model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
             effort TEXT NOT NULL DEFAULT 'high'
         );
 
@@ -225,6 +226,70 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to add model/effort columns: {e}"))?;
         eprintln!("[DB] agent_prompts model/effort migration complete");
+    }
+
+    // Migration: add provider column to agent_prompts
+    let has_provider: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_prompts'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("provider"))
+        .unwrap_or(false);
+
+    if !has_provider {
+        eprintln!("[DB] Migrating agent_prompts: adding provider column");
+        conn.execute_batch(
+            "ALTER TABLE agent_prompts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';",
+        )
+        .map_err(|e| format!("Failed to add provider column: {e}"))?;
+        eprintln!("[DB] agent_prompts provider migration complete");
+    }
+
+    // Migration: convert legacy model names (haiku/sonnet/opus) to full model IDs
+    let sample_model: Option<String> = conn
+        .query_row(
+            "SELECT model FROM agent_prompts LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(ref m) = sample_model {
+        if m == "haiku" || m == "sonnet" || m == "opus" {
+            eprintln!("[DB] Migrating agent_prompts: converting legacy model names to full IDs");
+            conn.execute_batch(
+                "UPDATE agent_prompts SET model = 'claude-haiku-4-5' WHERE model = 'haiku';\
+                 UPDATE agent_prompts SET model = 'claude-sonnet-4-6' WHERE model = 'sonnet';\
+                 UPDATE agent_prompts SET model = 'claude-opus-4-6' WHERE model = 'opus';\
+                 UPDATE agent_prompts SET provider = 'claude' WHERE provider = '' OR provider IS NULL;",
+            )
+            .map_err(|e| format!("Failed to migrate model names: {e}"))?;
+            eprintln!("[DB] agent_prompts model name migration complete");
+        }
+    }
+
+    // Migration: add provider and model columns to sessions table
+    let sessions_has_provider: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("provider"))
+        .unwrap_or(false);
+
+    if !sessions_has_provider {
+        eprintln!("[DB] Migrating sessions: adding provider and model columns");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';\
+             ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6';",
+        )
+        .map_err(|e| format!("Failed to add provider/model to sessions: {e}"))?;
+        eprintln!("[DB] sessions provider/model migration complete");
     }
 
     Ok(())
@@ -549,8 +614,8 @@ pub fn update_repo(conn: &Connection, repo: &RepoConfig) -> Result<(), String> {
 
 pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO sessions (repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO sessions (repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, provider, model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             session.repo_id,
             session.issue_number,
@@ -561,6 +626,8 @@ pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, Strin
             session.error_message,
             session.started_at,
             session.completed_at,
+            session.provider,
+            session.model,
         ],
     )
     .map_err(|e| format!("Failed to insert session: {e}"))?;
@@ -629,10 +696,12 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         completed_at: row.get(9)?,
         hidden: row.get::<_, i64>(10).unwrap_or(0) != 0,
         cost_usd: row.get(11).unwrap_or(None),
+        provider: row.get::<_, String>(12).unwrap_or_else(|_| "claude".to_string()),
+        model: row.get::<_, String>(13).unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
     })
 }
 
-const SESSION_COLS: &str = "id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, hidden, cost_usd";
+const SESSION_COLS: &str = "id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, hidden, cost_usd, provider, model";
 
 pub fn get_active_session(
     conn: &Connection,
@@ -846,7 +915,7 @@ pub fn save_app_settings(conn: &Connection, settings: &AppSettings) -> Result<()
 
 pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
     let mut stmt = conn
-        .prepare("SELECT stage, prompt_text, is_default, model, effort FROM agent_prompts")
+        .prepare("SELECT stage, prompt_text, is_default, provider, model, effort FROM agent_prompts")
         .map_err(|e| format!("Failed to query prompts: {e}"))?;
 
     let rows = stmt
@@ -855,8 +924,9 @@ pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
                 stage: row.get(0)?,
                 prompt_text: row.get(1)?,
                 is_default: row.get::<_, i32>(2)? != 0,
-                model: row.get(3)?,
-                effort: row.get(4)?,
+                provider: row.get(3)?,
+                model: row.get(4)?,
+                effort: row.get(5)?,
             })
         })
         .map_err(|e| format!("Failed to query prompts: {e}"))?;
@@ -870,7 +940,7 @@ pub fn get_all_prompts(conn: &Connection) -> Result<Vec<AgentPrompt>, String> {
 
 pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>, String> {
     let mut stmt = conn
-        .prepare("SELECT stage, prompt_text, is_default, model, effort FROM agent_prompts WHERE stage = ?1")
+        .prepare("SELECT stage, prompt_text, is_default, provider, model, effort FROM agent_prompts WHERE stage = ?1")
         .map_err(|e| format!("Failed to query prompt: {e}"))?;
 
     let result = stmt.query_row(params![stage], |row| {
@@ -878,8 +948,9 @@ pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>,
             stage: row.get(0)?,
             prompt_text: row.get(1)?,
             is_default: row.get::<_, i32>(2)? != 0,
-            model: row.get(3)?,
-            effort: row.get(4)?,
+            provider: row.get(3)?,
+            model: row.get(4)?,
+            effort: row.get(5)?,
         })
     });
 
@@ -890,10 +961,10 @@ pub fn get_prompt(conn: &Connection, stage: &str) -> Result<Option<AgentPrompt>,
     }
 }
 
-pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str, model: &str, effort: &str) -> Result<(), String> {
+pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str, provider: &str, model: &str, effort: &str) -> Result<(), String> {
     conn.execute(
-        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 0, model = ?3, effort = ?4 WHERE stage = ?2",
-        params![prompt_text, stage, model, effort],
+        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 0, provider = ?3, model = ?4, effort = ?5 WHERE stage = ?2",
+        params![prompt_text, stage, provider, model, effort],
     )
     .map_err(|e| format!("Failed to update prompt: {e}"))?;
     Ok(())
