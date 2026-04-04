@@ -13,6 +13,7 @@ use crate::types::*;
 pub enum ProviderKind {
     Claude,
     Codex,
+    Opencode,
 }
 
 impl ProviderKind {
@@ -20,6 +21,7 @@ impl ProviderKind {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -27,6 +29,7 @@ impl ProviderKind {
         match s {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "opencode" => Ok(Self::Opencode),
             other => Err(format!("Unknown provider: {other}")),
         }
     }
@@ -35,6 +38,7 @@ impl ProviderKind {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Opencode => "Opencode",
         }
     }
 }
@@ -108,6 +112,49 @@ pub fn all_models() -> Vec<ModelInfo> {
             id: "gpt-5.2-codex",
             display_name: "GPT-5.2-Codex",
             provider: ProviderKind::Codex,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        // Opencode models
+        ModelInfo {
+            id: "openai/gpt-5.4",
+            display_name: "GPT-5.4 (Opencode)",
+            provider: ProviderKind::Opencode,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        ModelInfo {
+            id: "openai/gpt-5.3-codex",
+            display_name: "GPT-5.3-Codex (Opencode)",
+            provider: ProviderKind::Opencode,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        ModelInfo {
+            id: "github-copilot/claude-sonnet-4.6",
+            display_name: "Sonnet 4.6 (Copilot)",
+            provider: ProviderKind::Opencode,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        ModelInfo {
+            id: "github-copilot/claude-opus-4.6",
+            display_name: "Opus 4.6 (Copilot)",
+            provider: ProviderKind::Opencode,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        ModelInfo {
+            id: "github-copilot/gpt-5.4",
+            display_name: "GPT-5.4 (Copilot)",
+            provider: ProviderKind::Opencode,
+            default_effort: "medium",
+            effort_levels: &["low", "medium", "high"],
+        },
+        ModelInfo {
+            id: "github-copilot/gemini-2.5-pro",
+            display_name: "Gemini 2.5 Pro (Copilot)",
+            provider: ProviderKind::Opencode,
             default_effort: "medium",
             effort_levels: &["low", "medium", "high"],
         },
@@ -311,6 +358,7 @@ pub fn get_provider(model_id: &str) -> Result<Box<dyn Provider>, String> {
     match kind {
         ProviderKind::Claude => Ok(Box::new(crate::claude_provider::ClaudeProvider)),
         ProviderKind::Codex => Ok(Box::new(crate::codex_provider::CodexProvider)),
+        ProviderKind::Opencode => Ok(Box::new(crate::opencode_provider::OpencodeProvider)),
     }
 }
 
@@ -319,6 +367,7 @@ pub fn get_provider_by_kind(kind: ProviderKind) -> Box<dyn Provider> {
     match kind {
         ProviderKind::Claude => Box::new(crate::claude_provider::ClaudeProvider),
         ProviderKind::Codex => Box::new(crate::codex_provider::CodexProvider),
+        ProviderKind::Opencode => Box::new(crate::opencode_provider::OpencodeProvider),
     }
 }
 
