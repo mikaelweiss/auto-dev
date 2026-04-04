@@ -403,16 +403,8 @@ impl CliMessage {
             }
             Self::Result(msg) => {
                 let mut entries = Vec::new();
-                // Emit the result text as a message
-                if let Some(ref text) = msg.result {
-                    if !text.trim().is_empty() {
-                        entries.push(LogEntry {
-                            event_type: "message".into(),
-                            content: text.clone(),
-                        });
-                    }
-                }
-                // Emit cost/duration as a result summary
+                // Don't emit result text as a message — it duplicates the assistant message.
+                // Only emit cost/duration as a result summary.
                 if let Some(cost) = msg.total_cost_usd {
                     let duration = msg.duration_ms.map(|ms| ms / 1000).unwrap_or(0);
                     let turns = msg.num_turns.unwrap_or(0);

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { Paperclip, Send, Square, Slash, AtSign } from 'lucide-svelte';
 	import * as backend from '$lib/stores/backend';
-	import { sessionLogs } from '$lib/stores/sessions';
 	import type { Session, Issue, RepoConfig } from '$lib/types';
 
 	interface Props {
@@ -198,28 +197,12 @@
 		});
 	}
 
-	function emitUserMessage(sessionId: string, message: string) {
-		sessionLogs.update((current) => {
-			const logs = current.get(sessionId) ?? [];
-			logs.push({
-				id: crypto.randomUUID(),
-				session_id: sessionId,
-				timestamp: new Date().toISOString(),
-				event_type: 'user_message',
-				content: message
-			});
-			current.set(sessionId, logs);
-			return new Map(current);
-		});
-	}
-
 	async function handleSend() {
 		if (!canSend) return;
 		const message = input.trim();
 		input = '';
 		autoResize();
 		if (session) {
-			emitUserMessage(session.id, message);
 			await backend.respondToSession(session.id, message);
 		} else {
 			onNewSession(message);

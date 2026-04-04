@@ -250,6 +250,11 @@ pub async fn session_start(
         )
     };
 
+    // Emit user message to the log if this is a user-typed message
+    if message.is_some() {
+        emit_user_message(&app_handle, session_db_id, &user_prompt);
+    }
+
     tokio::spawn(async move {
         let result = run_claude_session(
             &claude_path,
@@ -702,6 +707,9 @@ pub async fn session_respond(
     // Notify the frontend about the resumed session
     update_status_via_app(&app_handle, session_db_id, "running", None);
 
+    // Emit the user's message to the log
+    emit_user_message(&app_handle, session_db_id, &message);
+
     // Enable sleep prevention if this is the first active session
     let sleep_enabled = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -1073,6 +1081,24 @@ fn save_session_cost(app: &tauri::AppHandle, session_db_id: i64, cost: f64) {
     let _ = db.execute(
         "UPDATE sessions SET cost_usd = ?1 WHERE id = ?2",
         rusqlite::params![cost, session_db_id],
+    );
+}
+
+/// Emit a user message to the session log (both DB and frontend).
+fn emit_user_message(app: &tauri::AppHandle, session_db_id: i64, message: &str) {
+    insert_log_via_app(app, session_db_id, "user_message", message);
+    let _ = app.emit(
+        "session-log",
+        SessionLogEvent {
+            session_id: session_db_id.to_string(),
+            entry: SessionLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: session_db_id.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                event_type: "user_message".to_string(),
+                content: message.to_string(),
+            },
+        },
     );
 }
 
