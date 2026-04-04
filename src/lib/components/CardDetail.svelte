@@ -4,7 +4,7 @@
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import type { Session, SessionStage } from '$lib/types';
-	import { X, ExternalLink, Plus, Info, History, FileText, Code, Eye } from 'lucide-svelte';
+	import { X, ExternalLink, Plus, Info, History, Loader2, FileText, Code, Eye } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ChatInput from './ChatInput.svelte';
 
@@ -26,6 +26,7 @@
 	let showHistory = $state(false);
 	let hiddenSessions: Session[] = $state([]);
 	let historyLoading = $state(false);
+	let startingSession = $state(false);
 
 	// Auto-select the most recent session, or follow new sessions as they appear
 	let prevSessionCount = 0;
@@ -66,12 +67,24 @@
 			showHistory = false;
 			confirmHideSessionId = null;
 			hiddenSessions = [];
+			startingSession = false;
 		}
 	});
 
 	let activeSession: Session | null = $derived(
 		allSessions.find((s) => s.id === selectedSessionId) ?? null
 	);
+
+	// Ticking clock for live elapsed time on active sessions
+	let now = $state(Date.now());
+	let hasActiveSession = $derived(
+		allSessions.some((s) => s.status === 'running' || s.status === 'initializing' || s.status === 'setup')
+	);
+	$effect(() => {
+		if (!hasActiveSession) return;
+		const interval = setInterval(() => { now = Date.now(); }, 1000);
+		return () => clearInterval(interval);
+	});
 
 	function timeAgo(dateStr: string): string {
 		const now = Date.now();
@@ -154,10 +167,12 @@
 
 	function elapsedTime(startedAt: string, completedAt: string | null): string {
 		const start = new Date(startedAt).getTime();
-		const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+		const end = completedAt ? new Date(completedAt).getTime() : now;
 		const diffMs = end - start;
-		const minutes = Math.floor(diffMs / 60000);
-		if (minutes < 60) return `${minutes}m`;
+		const seconds = Math.floor(diffMs / 1000);
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
 		const hours = Math.floor(minutes / 60);
 		const remainingMin = minutes % 60;
 		return `${hours}h ${remainingMin}m`;
@@ -202,17 +217,23 @@
 	function handleStartPhase(stage: SessionStage) {
 		if (!repoConfig || !issue) return;
 		pendingNewTab = false;
+		startingSession = true;
+		let promise: Promise<void>;
 		switch (stage) {
 			case 'spec':
-				backend.startSession(repoConfig.id, issue.number);
+				promise = backend.startSession(repoConfig.id, issue.number);
 				break;
 			case 'implement':
-				backend.startImplementSession(repoConfig.id, issue.number);
+				promise = backend.startImplementSession(repoConfig.id, issue.number);
 				break;
 			case 'review':
-				backend.startReviewSession(repoConfig.id, issue.number);
+				promise = backend.startReviewSession(repoConfig.id, issue.number);
 				break;
+			default:
+				startingSession = false;
+				return;
 		}
+		promise.finally(() => { startingSession = false; });
 	}
 
 	function handleNewSession() {
@@ -428,11 +449,16 @@
 							{/if}
 						</div>
 						<button
-							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
 							onclick={handleNewTab}
+							disabled={startingSession}
 							title="New session"
 						>
-							<Plus class="h-3.5 w-3.5" />
+							{#if startingSession}
+								<Loader2 class="h-3.5 w-3.5 animate-spin" />
+							{:else}
+								<Plus class="h-3.5 w-3.5" />
+							{/if}
 						</button>
 						<div class="relative">
 							<button
@@ -505,7 +531,7 @@
 			<!-- Agent log -->
 			{#if activeSession}
 				<div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-					<AgentLog sessionId={activeSession.id} />
+					<AgentLog sessionId={activeSession.id} sessionStatus={activeSession.status} sessionStage={activeSession.stage} />
 				</div>
 			{:else if pendingNewTab}
 				<div class="flex-1 flex items-center justify-center">
@@ -538,32 +564,39 @@
 				</div>
 			{:else}
 				<div class="flex-1 flex items-center justify-center">
-					<div class="flex flex-col items-center gap-4">
-						<p class="text-sm text-muted-foreground">Start a phase or send a message</p>
-						<div class="flex gap-2">
-							<button
-								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
-								onclick={() => handleStartPhase('spec')}
-							>
-								<FileText class="h-4 w-4 text-blue-400" />
-								Spec
-							</button>
-							<button
-								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
-								onclick={() => handleStartPhase('implement')}
-							>
-								<Code class="h-4 w-4 text-green-400" />
-								Implement
-							</button>
-							<button
-								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
-								onclick={() => handleStartPhase('review')}
-							>
-								<Eye class="h-4 w-4 text-yellow-400" />
-								Review
-							</button>
+					{#if startingSession}
+						<div class="flex flex-col items-center gap-3">
+							<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+							<p class="text-sm text-muted-foreground">Starting session...</p>
 						</div>
-					</div>
+					{:else}
+						<div class="flex flex-col items-center gap-4">
+							<p class="text-sm text-muted-foreground">Start a phase or send a message</p>
+							<div class="flex gap-2">
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('spec')}
+								>
+									<FileText class="h-4 w-4 text-blue-400" />
+									Spec
+								</button>
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('implement')}
+								>
+									<Code class="h-4 w-4 text-green-400" />
+									Implement
+								</button>
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('review')}
+								>
+									<Eye class="h-4 w-4 text-yellow-400" />
+									Review
+								</button>
+							</div>
+						</div>
+					{/if}
 				</div>
 			{/if}
 

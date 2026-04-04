@@ -2,10 +2,12 @@
 	import { sessionLogs } from '$lib/stores/sessions';
 	import { fetchSessionLogs } from '$lib/stores/backend';
 	import type { SessionLogEntry } from '$lib/types';
-	import { Wrench, AlertCircle, ChevronRight, ChevronDown, Terminal } from 'lucide-svelte';
+	import { Wrench, AlertCircle, ChevronRight, ChevronDown, Terminal, Loader2 } from 'lucide-svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
-	let { sessionId }: { sessionId: string } = $props();
+	let { sessionId, sessionStatus = 'running', sessionStage = '' }: { sessionId: string; sessionStatus?: string; sessionStage?: string } = $props();
+
+	let isActive = $derived(sessionStatus === 'running' || sessionStatus === 'initializing' || sessionStatus === 'setup');
 
 	let container: HTMLDivElement | undefined = $state(undefined);
 
@@ -111,8 +113,19 @@
 
 <div bind:this={container} class="flex-1 overflow-y-auto pr-1 space-y-3 py-2">
 	{#if logs.length === 0}
-		<div class="flex items-center justify-center h-full">
-			<p class="text-sm text-muted-foreground">No activity yet.</p>
+		<div class="flex flex-col items-center justify-center h-full gap-3">
+			{#if sessionStatus === 'initializing'}
+				<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+				<p class="text-sm text-muted-foreground">Initializing session...</p>
+			{:else if sessionStatus === 'setup'}
+				<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+				<p class="text-sm text-muted-foreground">Running setup script...</p>
+			{:else if sessionStatus === 'running'}
+				<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+				<p class="text-sm text-muted-foreground">Starting {sessionStage || 'agent'}...</p>
+			{:else}
+				<p class="text-sm text-muted-foreground">No activity yet.</p>
+			{/if}
 		</div>
 	{:else}
 		{#each groups as group, groupIndex (groupIndex)}
@@ -192,5 +205,39 @@
 				</div>
 			{/if}
 		{/each}
+		{#if isActive}
+			<div class="px-2 flex items-center gap-2 py-1">
+				<div class="flex items-center gap-1">
+					<span class="thinking-dot h-1.5 w-1.5 rounded-full bg-muted-foreground/40"></span>
+					<span class="thinking-dot h-1.5 w-1.5 rounded-full bg-muted-foreground/40" style="animation-delay: 150ms"></span>
+					<span class="thinking-dot h-1.5 w-1.5 rounded-full bg-muted-foreground/40" style="animation-delay: 300ms"></span>
+				</div>
+				<span class="text-xs text-muted-foreground/60">
+					{#if sessionStatus === 'initializing'}
+						Initializing...
+					{:else if sessionStatus === 'setup'}
+						Running setup...
+					{:else}
+						Thinking...
+					{/if}
+				</span>
+			</div>
+		{/if}
 	{/if}
 </div>
+
+<style>
+	.thinking-dot {
+		animation: thinking-bounce 1.4s infinite ease-in-out both;
+	}
+	@keyframes thinking-bounce {
+		0%, 80%, 100% {
+			transform: scale(0.6);
+			opacity: 0.4;
+		}
+		40% {
+			transform: scale(1);
+			opacity: 1;
+		}
+	}
+</style>
