@@ -6,6 +6,7 @@ use tauri::Manager;
 mod claude_provider;
 mod codex_provider;
 mod db;
+mod opencode_provider;
 mod github;
 mod polling;
 mod provider;

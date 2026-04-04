@@ -4,7 +4,7 @@ export type SessionStage = 'spec' | 'implement' | 'review' | 'ci_fix' | 'merge_c
 
 export type SessionStatus = 'initializing' | 'setup' | 'running' | 'completed' | 'failed';
 
-export type ProviderKind = 'claude' | 'codex';
+export type ProviderKind = 'claude' | 'codex' | 'opencode';
 
 export interface GitHubUser {
 	login: string;
@@ -127,11 +127,19 @@ export const MODEL_REGISTRY: ModelInfo[] = [
 	{ id: 'gpt-5.3-codex-spark', display_name: 'GPT-5.3-Codex-Spark', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
 	{ id: 'gpt-5.3-codex', display_name: 'GPT-5.3-Codex', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
 	{ id: 'gpt-5.2-codex', display_name: 'GPT-5.2-Codex', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	// Opencode models
+	{ id: 'openai/gpt-5.4', display_name: 'GPT-5.4 (Opencode)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'openai/gpt-5.3-codex', display_name: 'GPT-5.3-Codex (Opencode)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'github-copilot/claude-sonnet-4.6', display_name: 'Sonnet 4.6 (Copilot)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'github-copilot/claude-opus-4.6', display_name: 'Opus 4.6 (Copilot)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'github-copilot/gpt-5.4', display_name: 'GPT-5.4 (Copilot)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'github-copilot/gemini-2.5-pro', display_name: 'Gemini 2.5 Pro (Copilot)', provider: 'opencode', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
 ];
 
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
 	claude: 'Claude Code',
 	codex: 'Codex',
+	opencode: 'Opencode',
 };
 
 export function getModelInfo(modelId: string): ModelInfo | undefined {
