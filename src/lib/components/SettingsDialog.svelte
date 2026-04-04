@@ -4,7 +4,7 @@
 	import { appSettings, agentPrompts, loadSettings, loadPrompts } from '$lib/stores/settings';
 	import { repos, selectedRepoId } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
-	import type { SessionStage, AppSettings } from '$lib/types';
+	import type { SessionStage, AppSettings, AgentModel, AgentEffort } from '$lib/types';
 	import { X } from 'lucide-svelte';
 
 	// Local copies of settings for editing
@@ -12,7 +12,9 @@
 		sleep_prevention: true,
 		notifications_enabled: true,
 		poll_interval_seconds: 15,
-		bypass_permissions: false
+		bypass_permissions: false,
+		agent_model: 'haiku',
+		agent_effort: 'high'
 	});
 
 	// Local copies of prompts
@@ -173,6 +175,43 @@
 								class="w-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
 								bind:value={localSettings.poll_interval_seconds}
 							/>
+						</div>
+					</div>
+
+					<div class="border-t border-border pt-4 mt-4 space-y-3">
+						<div>
+							<p class="text-sm font-medium text-foreground">Agent Model</p>
+							<p class="text-xs text-muted-foreground">Claude model and effort level for agent sessions</p>
+						</div>
+
+						<div class="grid grid-cols-2 gap-4">
+							<div class="space-y-1.5">
+								<label for="agent-model" class="text-sm font-medium text-foreground">Model</label>
+								<select
+									id="agent-model"
+									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
+									value={localSettings.agent_model}
+									onchange={(e) => { localSettings.agent_model = e.currentTarget.value as AgentModel; }}
+								>
+									<option value="haiku">haiku</option>
+									<option value="sonnet">sonnet</option>
+									<option value="opus">opus</option>
+								</select>
+							</div>
+							<div class="space-y-1.5">
+								<label for="agent-effort" class="text-sm font-medium text-foreground">Effort</label>
+								<select
+									id="agent-effort"
+									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
+									value={localSettings.agent_effort}
+									onchange={(e) => { localSettings.agent_effort = e.currentTarget.value as AgentEffort; }}
+								>
+									<option value="low">low</option>
+									<option value="medium">medium</option>
+									<option value="high">high</option>
+									<option value="max">max</option>
+								</select>
+							</div>
 						</div>
 					</div>
 

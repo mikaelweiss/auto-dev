@@ -750,12 +750,18 @@ pub fn get_app_settings(conn: &Connection) -> Result<AppSettings, String> {
     let bypass = get_setting(conn, "bypass_permissions")?
         .map(|v| v == "true")
         .unwrap_or(defaults.bypass_permissions);
+    let model = get_setting(conn, "agent_model")?
+        .unwrap_or(defaults.agent_model.clone());
+    let effort = get_setting(conn, "agent_effort")?
+        .unwrap_or(defaults.agent_effort.clone());
 
     Ok(AppSettings {
         sleep_prevention: sleep,
         notifications_enabled: notif,
         poll_interval_seconds: poll,
         bypass_permissions: bypass,
+        agent_model: model,
+        agent_effort: effort,
     })
 }
 
@@ -764,6 +770,8 @@ pub fn save_app_settings(conn: &Connection, settings: &AppSettings) -> Result<()
     set_setting(conn, "notifications_enabled", &settings.notifications_enabled.to_string())?;
     set_setting(conn, "poll_interval_seconds", &settings.poll_interval_seconds.to_string())?;
     set_setting(conn, "bypass_permissions", &settings.bypass_permissions.to_string())?;
+    set_setting(conn, "agent_model", &settings.agent_model)?;
+    set_setting(conn, "agent_effort", &settings.agent_effort)?;
     Ok(())
 }
 

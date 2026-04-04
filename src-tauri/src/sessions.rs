@@ -180,10 +180,11 @@ pub async fn session_start(
     }
     emit_session_status(&app_handle, &session);
 
-    // Enable sleep prevention if this is the first active session
-    let sleep_enabled = {
+    // Read settings for sleep prevention and agent config
+    let (sleep_enabled, agent_model, agent_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
+        let settings = db::get_app_settings(&db)?;
+        (settings.sleep_prevention, settings.agent_model, settings.agent_effort)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
@@ -201,6 +202,8 @@ pub async fn session_start(
             &spec_prompt,
             &user_prompt,
             "plan",
+            &agent_model,
+            &agent_effort,
             session_db_id,
             &app,
         )
@@ -323,18 +326,14 @@ pub async fn session_start_implement(
 
     let _ = app_handle.emit("session-status", &session);
 
-    // Enable sleep prevention if this is the first active session
-    let sleep_enabled = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
-    };
-    crate::sleep::on_session_start(sleep_enabled).await;
-
-    let permission_mode = {
+    // Read settings for sleep prevention, permissions, and agent config
+    let (sleep_enabled, permission_mode, agent_model, agent_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
-    }.to_string();
+        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        (settings.sleep_prevention, mode, settings.agent_model, settings.agent_effort)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
 
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
@@ -350,6 +349,8 @@ pub async fn session_start_implement(
             &implement_prompt,
             &user_prompt,
             &permission_mode,
+            &agent_model,
+            &agent_effort,
             session_db_id,
             &app,
         )
@@ -469,18 +470,14 @@ pub async fn session_start_review(
 
     let _ = app_handle.emit("session-status", &session);
 
-    // Enable sleep prevention if this is the first active session
-    let sleep_enabled = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_app_settings(&db).map(|s| s.sleep_prevention).unwrap_or(true)
-    };
-    crate::sleep::on_session_start(sleep_enabled).await;
-
-    let permission_mode = {
+    // Read settings for sleep prevention, permissions, and agent config
+    let (sleep_enabled, permission_mode, agent_model, agent_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
-    }.to_string();
+        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        (settings.sleep_prevention, mode, settings.agent_model, settings.agent_effort)
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
 
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
@@ -499,6 +496,8 @@ pub async fn session_start_review(
             &review_prompt,
             &user_prompt,
             &permission_mode,
+            &agent_model,
+            &agent_effort,
             session_db_id,
             &app,
         )
@@ -602,12 +601,17 @@ pub async fn session_respond(
             .unwrap_or_default()
     };
 
-    let permission_mode = if stage == "spec" {
-        "plan".to_string()
-    } else {
+    let (permission_mode, agent_model, agent_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() }
+        let mode = if stage == "spec" {
+            "plan".to_string()
+        } else if settings.bypass_permissions {
+            "bypassPermissions".to_string()
+        } else {
+            "auto".to_string()
+        };
+        (mode, settings.agent_model, settings.agent_effort)
     };
 
     // Create new session entry for the resumed work
@@ -646,6 +650,8 @@ pub async fn session_respond(
             &prompt,
             &message,
             &permission_mode,
+            &agent_model,
+            &agent_effort,
             new_db_id,
             &app,
         )
@@ -1028,6 +1034,8 @@ async fn run_claude_session(
     system_prompt: &str,
     user_prompt: &str,
     permission_mode: &str,
+    model: &str,
+    effort: &str,
     session_db_id: i64,
     app_handle: &tauri::AppHandle,
 ) -> Result<String, String> {
@@ -1039,6 +1047,10 @@ async fn run_claude_session(
             "stream-json",
             "--permission-mode",
             permission_mode,
+            "--model",
+            model,
+            "--effort",
+            effort,
         ])
         .arg("--system-prompt")
         .arg(system_prompt)
