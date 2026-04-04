@@ -4,7 +4,7 @@
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import type { Session } from '$lib/types';
-	import { X, ExternalLink, Plus, Info, History } from 'lucide-svelte';
+	import { X, ExternalLink, Plus, Info, History, Loader2 } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ChatInput from './ChatInput.svelte';
 
@@ -25,6 +25,7 @@
 	let showHistory = $state(false);
 	let hiddenSessions: Session[] = $state([]);
 	let historyLoading = $state(false);
+	let startingSession = $state(false);
 
 	// Auto-select the most recent session, or follow new sessions as they appear
 	let prevSessionCount = 0;
@@ -59,12 +60,24 @@
 			showHistory = false;
 			confirmHideSessionId = null;
 			hiddenSessions = [];
+			startingSession = false;
 		}
 	});
 
 	let activeSession: Session | null = $derived(
 		allSessions.find((s) => s.id === selectedSessionId) ?? null
 	);
+
+	// Ticking clock for live elapsed time on active sessions
+	let now = $state(Date.now());
+	let hasActiveSession = $derived(
+		allSessions.some((s) => s.status === 'running' || s.status === 'initializing' || s.status === 'setup')
+	);
+	$effect(() => {
+		if (!hasActiveSession) return;
+		const interval = setInterval(() => { now = Date.now(); }, 1000);
+		return () => clearInterval(interval);
+	});
 
 	function timeAgo(dateStr: string): string {
 		const now = Date.now();
@@ -147,10 +160,12 @@
 
 	function elapsedTime(startedAt: string, completedAt: string | null): string {
 		const start = new Date(startedAt).getTime();
-		const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+		const end = completedAt ? new Date(completedAt).getTime() : now;
 		const diffMs = end - start;
-		const minutes = Math.floor(diffMs / 60000);
-		if (minutes < 60) return `${minutes}m`;
+		const seconds = Math.floor(diffMs / 1000);
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
 		const hours = Math.floor(minutes / 60);
 		const remainingMin = minutes % 60;
 		return `${hours}h ${remainingMin}m`;
@@ -189,7 +204,10 @@
 
 	function handleNewSession() {
 		if (repoConfig && issue) {
-			backend.startSession(repoConfig.id, issue.number);
+			startingSession = true;
+			backend.startSession(repoConfig.id, issue.number).finally(() => {
+				startingSession = false;
+			});
 		}
 	}
 
@@ -383,11 +401,16 @@
 							{/each}
 						</div>
 						<button
-							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
 							onclick={handleNewSession}
+							disabled={startingSession}
 							title="New session"
 						>
-							<Plus class="h-3.5 w-3.5" />
+							{#if startingSession}
+								<Loader2 class="h-3.5 w-3.5 animate-spin" />
+							{:else}
+								<Plus class="h-3.5 w-3.5" />
+							{/if}
 						</button>
 						<div class="relative">
 							<button
@@ -460,11 +483,16 @@
 			<!-- Agent log -->
 			{#if activeSession}
 				<div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-					<AgentLog sessionId={activeSession.id} />
+					<AgentLog sessionId={activeSession.id} sessionStatus={activeSession.status} sessionStage={activeSession.stage} />
 				</div>
 			{:else}
-				<div class="flex-1 flex items-center justify-center">
-					<p class="text-sm text-muted-foreground">Send a message to start a new session.</p>
+				<div class="flex-1 flex flex-col items-center justify-center gap-3">
+					{#if startingSession}
+						<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+						<p class="text-sm text-muted-foreground">Starting session...</p>
+					{:else}
+						<p class="text-sm text-muted-foreground">Send a message to start a new session.</p>
+					{/if}
 				</div>
 			{/if}
 
