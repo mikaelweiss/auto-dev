@@ -52,6 +52,40 @@ pub async fn session_list(
     Ok(sessions)
 }
 
+#[tauri::command]
+pub async fn session_hide(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::hide_session(&db, session_db_id)
+}
+
+#[tauri::command]
+pub async fn session_unhide(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::unhide_session(&db, session_db_id)
+}
+
+#[tauri::command]
+pub async fn session_list_hidden(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+    issue_number: i64,
+) -> Result<Vec<Session>, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::get_hidden_sessions(&db, repo_id, issue_number)
+}
+
 /// Helper to emit a session-status event to the frontend.
 fn emit_session_status(app_handle: &tauri::AppHandle, session: &Session) {
     let _ = app_handle.emit("session-status", session);
@@ -87,6 +121,7 @@ pub async fn session_start(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -191,9 +226,21 @@ pub async fn session_start(
     // Spawn claude in background
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
+    let owner = repo.owner.clone();
+    let name = repo.name.clone();
     let user_prompt = format!(
-        "GitHub Issue #{issue_number}\n\nAnalyze this issue and the codebase, then write a detailed spec comment."
+        "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
+         Follow the spec process: check for an existing spec in the issue comments, \
+         explore the codebase, and produce or update the spec. \
+         Use `gh` CLI for all GitHub interactions (comments, labels). \
+         The repo is {owner}/{name} and the issue number is {issue_number}."
     );
+
+    let permission_mode = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let settings = db::get_app_settings(&db)?;
+        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
+    }.to_string();
 
     tokio::spawn(async move {
         let result = run_claude_session(
@@ -201,16 +248,20 @@ pub async fn session_start(
             &wt_path,
             &spec_prompt,
             &user_prompt,
-            "plan",
+            &permission_mode,
             &agent_model,
             &agent_effort,
+            None,
             session_db_id,
             &app,
         )
         .await;
 
         match result {
-            Ok(output) => {
+            Ok(res) => {
+                if let Some(ref cli_id) = res.cli_session_id {
+                    save_cli_session_id(&app, session_db_id, cli_id);
+                }
                 update_status_via_app(&app, session_db_id, "completed", None);
 
                 let _ = app.emit(
@@ -226,20 +277,6 @@ pub async fn session_start(
                         },
                     },
                 );
-
-                // Check if output contains questions
-                let has_questions = output.to_lowercase().contains("question")
-                    || output.to_lowercase().contains("?");
-
-                if has_questions {
-                    let _ = app.emit(
-                        "session-blocked",
-                        serde_json::json!({
-                            "session_id": session_db_id.to_string(),
-                            "question": output,
-                        }),
-                    );
-                }
             }
             Err(e) => {
                 update_status_via_app(&app, session_db_id, "failed", Some(&e));
@@ -312,6 +349,7 @@ pub async fn session_start_implement(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -351,13 +389,17 @@ pub async fn session_start_implement(
             &permission_mode,
             &agent_model,
             &agent_effort,
+            None,
             session_db_id,
             &app,
         )
         .await;
 
         match result {
-            Ok(_output) => {
+            Ok(res) => {
+                if let Some(ref cli_id) = res.cli_session_id {
+                    save_cli_session_id(&app, session_db_id, cli_id);
+                }
                 update_status_via_app(&app, session_db_id, "completed", None);
 
                 let _ = app.emit(
@@ -456,6 +498,7 @@ pub async fn session_start_review(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -498,13 +541,17 @@ pub async fn session_start_review(
             &permission_mode,
             &agent_model,
             &agent_effort,
+            None,
             session_db_id,
             &app,
         )
         .await;
 
         match result {
-            Ok(_output) => {
+            Ok(res) => {
+                if let Some(ref cli_id) = res.cli_session_id {
+                    save_cli_session_id(&app, session_db_id, cli_id);
+                }
                 // Push and create PR
                 let branch_name = format!("{branch_prefix}issue-{issue_number}");
 
@@ -573,20 +620,19 @@ pub async fn session_respond(
         .parse()
         .map_err(|_| "Invalid session ID".to_string())?;
 
-    let (repo_id, issue_number, worktree_path, stage) = {
+    let (worktree_path, stage, cli_session_id) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let mut stmt = db
             .prepare(
-                "SELECT repo_id, issue_number, worktree_path, stage FROM sessions WHERE id = ?1",
+                "SELECT worktree_path, stage, session_id FROM sessions WHERE id = ?1",
             )
             .map_err(|e| format!("Query error: {e}"))?;
 
         stmt.query_row(rusqlite::params![session_db_id], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
             ))
         })
         .map_err(|e| format!("Session not found: {e}"))?
@@ -614,24 +660,14 @@ pub async fn session_respond(
         (mode, settings.agent_model, settings.agent_effort)
     };
 
-    // Create new session entry for the resumed work
-    let new_session = Session {
-        id: "0".to_string(),
-        repo_id,
-        issue_number,
-        stage: stage.clone(),
-        worktree_path: Some(worktree_path.clone()),
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
-        status: "running".to_string(),
-        error_message: None,
-        started_at: chrono::Utc::now().to_rfc3339(),
-        completed_at: None,
-    };
-
-    let new_db_id = {
+    // Update existing session status back to running
+    {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::insert_session(&db, &new_session)?
-    };
+        db::update_session_status(&db, session_db_id, "running", None)?;
+    }
+
+    // Notify the frontend about the resumed session
+    update_status_via_app(&app_handle, session_db_id, "running", None);
 
     // Enable sleep prevention if this is the first active session
     let sleep_enabled = {
@@ -652,22 +688,26 @@ pub async fn session_respond(
             &permission_mode,
             &agent_model,
             &agent_effort,
-            new_db_id,
+            cli_session_id.as_deref(),
+            session_db_id,
             &app,
         )
         .await;
 
         match result {
-            Ok(_) => {
-                update_status_via_app(&app, new_db_id, "completed", None);
+            Ok(res) => {
+                if let Some(ref cli_id) = res.cli_session_id {
+                    save_cli_session_id(&app, session_db_id, cli_id);
+                }
+                update_status_via_app(&app, session_db_id, "completed", None);
 
                 let _ = app.emit(
                     "session-log",
                     SessionLogEvent {
-                        session_id: new_db_id.to_string(),
+                        session_id: session_db_id.to_string(),
                         entry: SessionLogEntry {
                             id: uuid::Uuid::new_v4().to_string(),
-                            session_id: new_db_id.to_string(),
+                            session_id: session_db_id.to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
                             event_type: "status_change".to_string(),
                             content: "Session resumed and completed".to_string(),
@@ -676,12 +716,12 @@ pub async fn session_respond(
                 );
             }
             Err(e) => {
-                update_status_via_app(&app, new_db_id, "failed", Some(&e));
+                update_status_via_app(&app, session_db_id, "failed", Some(&e));
 
                 let _ = app.emit(
                     "session-error",
                     serde_json::json!({
-                        "session_id": new_db_id.to_string(),
+                        "session_id": session_db_id.to_string(),
                         "error": e,
                     }),
                 );
@@ -739,6 +779,47 @@ pub async fn session_stop(
     // The spawned tokio tasks will complete on their own.
     // TODO: Track child process handles in AppState for proper cancellation
     Ok(())
+}
+
+#[tauri::command]
+pub async fn session_list_files(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+
+    let worktree_path = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let mut stmt = db
+            .prepare("SELECT worktree_path FROM sessions WHERE id = ?1")
+            .map_err(|e| format!("Query error: {e}"))?;
+        stmt.query_row(rusqlite::params![session_db_id], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(|e| format!("Session not found: {e}"))?
+    };
+
+    let worktree_path = worktree_path.ok_or("No worktree for this session")?;
+
+    let output = tokio::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(&worktree_path)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to list files: {e}"))?;
+
+    if !output.status.success() {
+        return Err("Failed to list worktree files".to_string());
+    }
+
+    let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+
+    Ok(files)
 }
 
 #[tauri::command]
@@ -910,6 +991,13 @@ fn update_status_via_app(
     }
 }
 
+/// Save the captured Claude CLI session ID to the database.
+fn save_cli_session_id(app: &tauri::AppHandle, session_db_id: i64, cli_session_id: &str) {
+    let state = app.state::<AppState>();
+    let Ok(db) = state.db.lock() else { return };
+    let _ = db::update_session_cli_id(&db, session_db_id, cli_session_id);
+}
+
 fn insert_log_via_app(
     app: &tauri::AppHandle,
     session_db_id: i64,
@@ -1028,6 +1116,12 @@ fn format_tool_summary(name: &str, input: &Value) -> String {
 
 // ── Internal: Run Claude Session ────────────────────────────────────────
 
+/// Result from running a Claude session, including the captured CLI session ID.
+struct ClaudeSessionResult {
+    /// The Claude CLI session ID captured from the stream output, if available.
+    cli_session_id: Option<String>,
+}
+
 async fn run_claude_session(
     claude_path: &str,
     worktree_path: &str,
@@ -1036,28 +1130,38 @@ async fn run_claude_session(
     permission_mode: &str,
     model: &str,
     effort: &str,
+    resume_session_id: Option<&str>,
     session_db_id: i64,
     app_handle: &tauri::AppHandle,
-) -> Result<String, String> {
-    let mut child = tokio::process::Command::new(claude_path)
-        .args([
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            "--permission-mode",
-            permission_mode,
-            "--model",
-            model,
-            "--effort",
-            effort,
-        ])
-        .arg("--system-prompt")
-        .arg(system_prompt)
-        .arg(user_prompt)
+) -> Result<ClaudeSessionResult, String> {
+    let mut cmd = tokio::process::Command::new(claude_path);
+    cmd.args([
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        permission_mode,
+        "--model",
+        model,
+        "--effort",
+        effort,
+    ]);
+
+    // Resume a previous conversation if we have a CLI session ID
+    if let Some(resume_id) = resume_session_id {
+        cmd.arg("--resume").arg(resume_id);
+    } else {
+        // Only set system prompt for new conversations; resumed ones already have it
+        cmd.arg("--system-prompt").arg(system_prompt);
+    }
+
+    cmd.arg(user_prompt)
         .current_dir(worktree_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn claude: {e}"))?;
 
@@ -1068,20 +1172,26 @@ async fn run_claude_session(
     let stderr = child.stderr.take();
 
     let mut reader = BufReader::new(stdout).lines();
-    let mut full_output = String::new();
+    let mut cli_session_id: Option<String> = None;
 
     while let Some(line) = reader
         .next_line()
         .await
         .map_err(|e| format!("Failed to read claude output: {e}"))?
     {
+        // Try to capture the Claude CLI session ID from system/result events
+        if cli_session_id.is_none() {
+            if let Ok(json) = serde_json::from_str::<Value>(&line) {
+                if let Some(sid) = json["session_id"].as_str() {
+                    cli_session_id = Some(sid.to_string());
+                }
+            }
+        }
+
         // Parse Claude CLI stream-json events into (event_type, content) pairs
         let entries = parse_stream_json_line(&line);
 
         for (event_type, content) in entries {
-            full_output.push_str(&content);
-            full_output.push('\n');
-
             // Persist log to DB
             insert_log_via_app(app_handle, session_db_id, &event_type, &content);
 
@@ -1124,5 +1234,7 @@ async fn run_claude_session(
         return Err(detail);
     }
 
-    Ok(full_output)
+    Ok(ClaudeSessionResult {
+        cli_session_id,
+    })
 }
