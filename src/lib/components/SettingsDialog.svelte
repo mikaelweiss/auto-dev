@@ -7,23 +7,40 @@
 	import type { SessionStage, AppSettings, AgentModel, AgentEffort } from '$lib/types';
 	import { X } from 'lucide-svelte';
 
+	const MODELS: AgentModel[] = ['haiku', 'sonnet', 'opus'];
+	const EFFORTS: AgentEffort[] = ['low', 'medium', 'high', 'max'];
+
 	// Local copies of settings for editing
 	let localSettings = $state<AppSettings>({
 		sleep_prevention: true,
 		notifications_enabled: true,
 		poll_interval_seconds: 15,
-		bypass_permissions: false,
-		agent_model: 'haiku',
-		agent_effort: 'high'
+		bypass_permissions: false
 	});
 
-	// Local copies of prompts
+	// Local copies of prompts (per-stage text, model, effort)
 	let localPrompts = $state<Record<SessionStage, string>>({
 		spec: '',
 		implement: '',
 		review: '',
 		ci_fix: '',
 		merge_conflict: ''
+	});
+
+	let localModels = $state<Record<SessionStage, AgentModel>>({
+		spec: 'haiku',
+		implement: 'haiku',
+		review: 'haiku',
+		ci_fix: 'haiku',
+		merge_conflict: 'haiku'
+	});
+
+	let localEfforts = $state<Record<SessionStage, AgentEffort>>({
+		spec: 'high',
+		implement: 'high',
+		review: 'high',
+		ci_fix: 'high',
+		merge_conflict: 'high'
 	});
 
 	// Repo-specific settings
@@ -52,6 +69,8 @@
 
 			for (const prompt of $agentPrompts) {
 				localPrompts[prompt.stage] = prompt.prompt_text;
+				localModels[prompt.stage] = prompt.model;
+				localEfforts[prompt.stage] = prompt.effort;
 			}
 
 			if (selectedRepo) {
@@ -80,18 +99,27 @@
 		backend.updateSettings(localSettings);
 	}
 
-	function savePrompt(stage: SessionStage) {
-		backend.updatePrompt(stage, localPrompts[stage]);
-	}
-
 	function saveAllPrompts() {
 		for (const stage of STAGES) {
-			if (localPrompts[stage]) {
-				savePrompt(stage);
-			}
+			backend.updatePrompt(stage, localPrompts[stage], localModels[stage], localEfforts[stage]);
 		}
 	}
 </script>
+
+{#snippet segmentedButtons(options: string[], value: string, onSelect: (v: string) => void)}
+	<div class="inline-flex rounded-md border border-border overflow-hidden">
+		{#each options as option (option)}
+			<button
+				class="px-2.5 py-1 text-xs font-medium transition-colors {value === option
+					? 'bg-primary text-primary-foreground'
+					: 'bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground'}"
+				onclick={() => onSelect(option)}
+			>
+				{option}
+			</button>
+		{/each}
+	</div>
+{/snippet}
 
 <Dialog.Root
 	open={$showSettings}
@@ -123,7 +151,7 @@
 						value="prompts"
 						class="px-3 py-2 text-sm text-muted-foreground border-b-2 border-transparent data-[state=active]:text-foreground data-[state=active]:border-primary transition-colors"
 					>
-						Agent Prompts
+						Agent Config
 					</Tabs.Trigger>
 					<Tabs.Trigger
 						value="repo"
@@ -180,43 +208,6 @@
 
 					<div class="border-t border-border pt-4 mt-4 space-y-3">
 						<div>
-							<p class="text-sm font-medium text-foreground">Agent Model</p>
-							<p class="text-xs text-muted-foreground">Claude model and effort level for agent sessions</p>
-						</div>
-
-						<div class="grid grid-cols-2 gap-4">
-							<div class="space-y-1.5">
-								<label for="agent-model" class="text-sm font-medium text-foreground">Model</label>
-								<select
-									id="agent-model"
-									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
-									value={localSettings.agent_model}
-									onchange={(e) => { localSettings.agent_model = e.currentTarget.value as AgentModel; }}
-								>
-									<option value="haiku">haiku</option>
-									<option value="sonnet">sonnet</option>
-									<option value="opus">opus</option>
-								</select>
-							</div>
-							<div class="space-y-1.5">
-								<label for="agent-effort" class="text-sm font-medium text-foreground">Effort</label>
-								<select
-									id="agent-effort"
-									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
-									value={localSettings.agent_effort}
-									onchange={(e) => { localSettings.agent_effort = e.currentTarget.value as AgentEffort; }}
-								>
-									<option value="low">low</option>
-									<option value="medium">medium</option>
-									<option value="high">high</option>
-									<option value="max">max</option>
-								</select>
-							</div>
-						</div>
-					</div>
-
-					<div class="border-t border-border pt-4 mt-4 space-y-3">
-						<div>
 							<p class="text-sm font-medium text-foreground">Agent Permissions</p>
 							<p class="text-xs text-muted-foreground">Controls how much autonomy agents have when running tasks</p>
 						</div>
@@ -252,14 +243,26 @@
 					</div>
 				</Tabs.Content>
 
-				<!-- Agent Prompts Tab -->
+				<!-- Agent Config Tab -->
 				<Tabs.Content value="prompts" class="flex-1 overflow-y-auto p-4 space-y-4">
 					{#each STAGES as stage (stage)}
-						<div class="space-y-1.5">
-							<label for="prompt-{stage}" class="text-sm font-medium text-foreground">{STAGE_LABELS[stage]}</label>
+						<div class="rounded-lg border border-border p-3 space-y-3">
+							<div class="flex items-center justify-between">
+								<p class="text-sm font-semibold text-foreground">{STAGE_LABELS[stage]}</p>
+								<div class="flex items-center gap-3">
+									<div class="flex items-center gap-1.5">
+										<span class="text-xs text-muted-foreground">Model</span>
+										{@render segmentedButtons(MODELS, localModels[stage], (v) => { localModels[stage] = v as AgentModel; })}
+									</div>
+									<div class="flex items-center gap-1.5">
+										<span class="text-xs text-muted-foreground">Effort</span>
+										{@render segmentedButtons(EFFORTS, localEfforts[stage], (v) => { localEfforts[stage] = v as AgentEffort; })}
+									</div>
+								</div>
+							</div>
 							<textarea
 								id="prompt-{stage}"
-								class="w-full h-28 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-y font-mono"
+								class="w-full h-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-y font-mono"
 								placeholder="Custom prompt for {STAGE_LABELS[stage]} stage..."
 								bind:value={localPrompts[stage]}
 							></textarea>
@@ -271,7 +274,7 @@
 							class="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
 							onclick={saveAllPrompts}
 						>
-							Save Prompts
+							Save Agent Config
 						</button>
 					</div>
 				</Tabs.Content>

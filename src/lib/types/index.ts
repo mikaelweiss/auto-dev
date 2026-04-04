@@ -81,22 +81,22 @@ export interface RepoRemovalInfo {
 	log_count: number;
 }
 
+export type AgentModel = 'haiku' | 'sonnet' | 'opus';
+export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
+
 export interface AgentPrompt {
 	stage: SessionStage;
 	prompt_text: string;
 	is_default: boolean;
+	model: AgentModel;
+	effort: AgentEffort;
 }
-
-export type AgentModel = 'haiku' | 'sonnet' | 'opus';
-export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
 
 export interface AppSettings {
 	sleep_prevention: boolean;
 	notifications_enabled: boolean;
 	poll_interval_seconds: number;
 	bypass_permissions: boolean;
-	agent_model: AgentModel;
-	agent_effort: AgentEffort;
 }
 
 export const COLUMN_CONFIG: Record<ColumnId, { label: string; github_label: string | null }> = {

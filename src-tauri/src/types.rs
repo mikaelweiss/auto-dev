@@ -81,6 +81,8 @@ pub struct AgentPrompt {
     pub stage: String,
     pub prompt_text: String,
     pub is_default: bool,
+    pub model: String,
+    pub effort: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -89,8 +91,6 @@ pub struct AppSettings {
     pub notifications_enabled: bool,
     pub poll_interval_seconds: i64,
     pub bypass_permissions: bool,
-    pub agent_model: String,
-    pub agent_effort: String,
 }
 
 impl Default for AppSettings {
@@ -100,8 +100,6 @@ impl Default for AppSettings {
             notifications_enabled: true,
             poll_interval_seconds: 15,
             bypass_permissions: false,
-            agent_model: "haiku".to_string(),
-            agent_effort: "high".to_string(),
         }
     }
 }

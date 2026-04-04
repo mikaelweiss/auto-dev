@@ -6,9 +6,7 @@ export const appSettings = writable<AppSettings>({
 	sleep_prevention: true,
 	notifications_enabled: true,
 	poll_interval_seconds: 15,
-	bypass_permissions: false,
-	agent_model: 'haiku',
-	agent_effort: 'high'
+	bypass_permissions: false
 });
 
 export const agentPrompts = writable<AgentPrompt[]>([]);

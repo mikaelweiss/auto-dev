@@ -162,11 +162,12 @@ pub async fn session_start(
         None => fail_session!(format!("Repo {repo_id} not found")),
     };
 
-    let spec_prompt = {
+    let (spec_prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, "spec")?
-            .map(|p| p.prompt_text)
-            .unwrap_or_else(|| "Analyze this issue and write a spec.".to_string())
+        match db::get_prompt(&db, "spec")? {
+            Some(p) => (p.prompt_text, p.model, p.effort),
+            None => ("Analyze this issue and write a spec.".to_string(), "haiku".to_string(), "high".to_string()),
+        }
     };
 
     let repo_path = match {
@@ -215,11 +216,12 @@ pub async fn session_start(
     }
     emit_session_status(&app_handle, &session);
 
-    // Read settings for sleep prevention and agent config
-    let (sleep_enabled, agent_model, agent_effort) = {
+    // Read settings for sleep prevention and permissions
+    let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        (settings.sleep_prevention, settings.agent_model, settings.agent_effort)
+        let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
+        (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
@@ -236,12 +238,6 @@ pub async fn session_start(
          The repo is {owner}/{name} and the issue number is {issue_number}."
     );
 
-    let permission_mode = {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        let settings = db::get_app_settings(&db)?;
-        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
-    }.to_string();
-
     tokio::spawn(async move {
         let result = run_claude_session(
             &claude_path,
@@ -249,8 +245,8 @@ pub async fn session_start(
             &spec_prompt,
             &user_prompt,
             &permission_mode,
-            &agent_model,
-            &agent_effort,
+            &stage_model,
+            &stage_effort,
             None,
             session_db_id,
             &app,
@@ -323,11 +319,12 @@ pub async fn session_start_implement(
             .ok_or_else(|| format!("Repo {repo_id} not found"))?
     };
 
-    let implement_prompt = {
+    let (implement_prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, "implement")?
-            .map(|p| p.prompt_text)
-            .unwrap_or_else(|| "Implement the feature as specified.".to_string())
+        match db::get_prompt(&db, "implement")? {
+            Some(p) => (p.prompt_text, p.model, p.effort),
+            None => ("Implement the feature as specified.".to_string(), "haiku".to_string(), "high".to_string()),
+        }
     };
 
     // Find existing worktree path from previous session
@@ -364,12 +361,12 @@ pub async fn session_start_implement(
 
     let _ = app_handle.emit("session-status", &session);
 
-    // Read settings for sleep prevention, permissions, and agent config
-    let (sleep_enabled, permission_mode, agent_model, agent_effort) = {
+    // Read settings for sleep prevention and permissions
+    let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
         let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
-        (settings.sleep_prevention, mode, settings.agent_model, settings.agent_effort)
+        (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
@@ -387,8 +384,8 @@ pub async fn session_start_implement(
             &implement_prompt,
             &user_prompt,
             &permission_mode,
-            &agent_model,
-            &agent_effort,
+            &stage_model,
+            &stage_effort,
             None,
             session_db_id,
             &app,
@@ -470,11 +467,12 @@ pub async fn session_start_review(
             .ok_or_else(|| format!("Repo {repo_id} not found"))?
     };
 
-    let review_prompt = {
+    let (review_prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, "review")?
-            .map(|p| p.prompt_text)
-            .unwrap_or_else(|| "Review the diff and fix any issues.".to_string())
+        match db::get_prompt(&db, "review")? {
+            Some(p) => (p.prompt_text, p.model, p.effort),
+            None => ("Review the diff and fix any issues.".to_string(), "haiku".to_string(), "high".to_string()),
+        }
     };
 
     let worktree_path = {
@@ -513,12 +511,12 @@ pub async fn session_start_review(
 
     let _ = app_handle.emit("session-status", &session);
 
-    // Read settings for sleep prevention, permissions, and agent config
-    let (sleep_enabled, permission_mode, agent_model, agent_effort) = {
+    // Read settings for sleep prevention and permissions
+    let (sleep_enabled, permission_mode) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
         let mode = if settings.bypass_permissions { "bypassPermissions".to_string() } else { "auto".to_string() };
-        (settings.sleep_prevention, mode, settings.agent_model, settings.agent_effort)
+        (settings.sleep_prevention, mode)
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
@@ -539,8 +537,8 @@ pub async fn session_start_review(
             &review_prompt,
             &user_prompt,
             &permission_mode,
-            &agent_model,
-            &agent_effort,
+            &stage_model,
+            &stage_effort,
             None,
             session_db_id,
             &app,
@@ -640,24 +638,24 @@ pub async fn session_respond(
 
     let worktree_path = worktree_path.ok_or("No worktree for this session")?;
 
-    let prompt = {
+    let (prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::get_prompt(&db, &stage)?
-            .map(|p| p.prompt_text)
-            .unwrap_or_default()
+        match db::get_prompt(&db, &stage)? {
+            Some(p) => (p.prompt_text, p.model, p.effort),
+            None => (String::new(), "haiku".to_string(), "high".to_string()),
+        }
     };
 
-    let (permission_mode, agent_model, agent_effort) = {
+    let permission_mode = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         let settings = db::get_app_settings(&db)?;
-        let mode = if stage == "spec" {
+        if stage == "spec" {
             "plan".to_string()
         } else if settings.bypass_permissions {
             "bypassPermissions".to_string()
         } else {
             "auto".to_string()
-        };
-        (mode, settings.agent_model, settings.agent_effort)
+        }
     };
 
     // Update existing session status back to running
@@ -686,8 +684,8 @@ pub async fn session_respond(
             &prompt,
             &message,
             &permission_mode,
-            &agent_model,
-            &agent_effort,
+            &stage_model,
+            &stage_effort,
             cli_session_id.as_deref(),
             session_db_id,
             &app,
@@ -886,9 +884,11 @@ pub async fn prompts_set(
     state: tauri::State<'_, AppState>,
     stage: String,
     prompt_text: String,
+    model: String,
+    effort: String,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-    db::update_prompt(&db, &stage, &prompt_text)
+    db::update_prompt(&db, &stage, &prompt_text, &model, &effort)
 }
 
 #[tauri::command]
