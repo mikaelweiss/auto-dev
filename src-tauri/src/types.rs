@@ -81,6 +81,8 @@ pub struct AgentPrompt {
     pub stage: String,
     pub prompt_text: String,
     pub is_default: bool,
+    pub model: String,
+    pub effort: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

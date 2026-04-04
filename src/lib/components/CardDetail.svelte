@@ -3,8 +3,8 @@
 	import { sessions, sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
-	import type { Session } from '$lib/types';
-	import { X, ExternalLink, Plus, Info, History, Loader2 } from 'lucide-svelte';
+	import type { Session, SessionStage } from '$lib/types';
+	import { X, ExternalLink, Plus, Info, History, Loader2, FileText, Code, Eye } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ChatInput from './ChatInput.svelte';
 
@@ -18,6 +18,7 @@
 	let allSessions = $derived(sessionKey ? $sessionsByIssue.get(sessionKey) ?? [] : []);
 
 	let selectedSessionId: string | null = $state(null);
+	let pendingNewTab = $state(false);
 	let showDetails = $state(false);
 	let editingBody = $state(false);
 	let bodyDraft = $state('');
@@ -30,6 +31,11 @@
 	// Auto-select the most recent session, or follow new sessions as they appear
 	let prevSessionCount = 0;
 	$effect(() => {
+		if (pendingNewTab) {
+			// Don't auto-select when user has a pending new tab open
+			prevSessionCount = allSessions.length;
+			return;
+		}
 		if (allSessions.length > 0) {
 			const ids = new Set(allSessions.map((s) => s.id));
 			if (!selectedSessionId || !ids.has(selectedSessionId)) {
@@ -54,6 +60,7 @@
 	$effect(() => {
 		if (issue) {
 			selectedSessionId = null;
+			pendingNewTab = false;
 			showDetails = false;
 			editingBody = false;
 			bodyDraft = issue.body;
@@ -202,13 +209,35 @@
 		}
 	}
 
-	function handleNewSession() {
-		if (repoConfig && issue) {
-			startingSession = true;
-			backend.startSession(repoConfig.id, issue.number).finally(() => {
+	function handleNewTab() {
+		pendingNewTab = true;
+		selectedSessionId = null;
+	}
+
+	function handleStartPhase(stage: SessionStage) {
+		if (!repoConfig || !issue) return;
+		pendingNewTab = false;
+		startingSession = true;
+		let promise: Promise<void>;
+		switch (stage) {
+			case 'spec':
+				promise = backend.startSession(repoConfig.id, issue.number);
+				break;
+			case 'implement':
+				promise = backend.startImplementSession(repoConfig.id, issue.number);
+				break;
+			case 'review':
+				promise = backend.startReviewSession(repoConfig.id, issue.number);
+				break;
+			default:
 				startingSession = false;
-			});
+				return;
 		}
+		promise.finally(() => { startingSession = false; });
+	}
+
+	function handleNewSession() {
+		handleStartPhase('spec');
 	}
 
 	let copied = $state(false);
@@ -371,11 +400,12 @@
 							{#each allSessions as sess (sess.id)}
 								<button
 									class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
-										{sess.id === selectedSessionId
+										{sess.id === selectedSessionId && !pendingNewTab
 										? 'bg-muted text-foreground'
 										: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
 									onclick={() => {
 										selectedSessionId = sess.id;
+										pendingNewTab = false;
 									}}
 								>
 									<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
@@ -399,10 +429,28 @@
 									</span>
 								</button>
 							{/each}
+							{#if pendingNewTab}
+								<button
+									class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors bg-muted text-foreground"
+								>
+									<span class="h-2 w-2 rounded-full shrink-0 bg-muted-foreground"></span>
+									new
+									<span
+										role="button"
+										tabindex="0"
+										class="ml-0.5 p-0.5 rounded hover:bg-background/50 opacity-0 group-hover:opacity-100 transition-opacity"
+										onclick={(e) => { e.stopPropagation(); pendingNewTab = false; if (allSessions.length > 0) selectedSessionId = allSessions[0].id; }}
+										onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); pendingNewTab = false; if (allSessions.length > 0) selectedSessionId = allSessions[0].id; } }}
+										title="Close tab"
+									>
+										<X class="h-3 w-3" />
+									</span>
+								</button>
+							{/if}
 						</div>
 						<button
 							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-							onclick={handleNewSession}
+							onclick={handleNewTab}
 							disabled={startingSession}
 							title="New session"
 						>
@@ -485,13 +533,69 @@
 				<div class="flex-1 min-h-0 flex flex-col overflow-hidden">
 					<AgentLog sessionId={activeSession.id} sessionStatus={activeSession.status} sessionStage={activeSession.stage} />
 				</div>
+			{:else if pendingNewTab}
+				<div class="flex-1 flex items-center justify-center">
+					<div class="flex flex-col items-center gap-4">
+						<p class="text-sm text-muted-foreground">Start a phase or send a message</p>
+						<div class="flex gap-2">
+							<button
+								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+								onclick={() => handleStartPhase('spec')}
+							>
+								<FileText class="h-4 w-4 text-blue-400" />
+								Spec
+							</button>
+							<button
+								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+								onclick={() => handleStartPhase('implement')}
+							>
+								<Code class="h-4 w-4 text-green-400" />
+								Implement
+							</button>
+							<button
+								class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+								onclick={() => handleStartPhase('review')}
+							>
+								<Eye class="h-4 w-4 text-yellow-400" />
+								Review
+							</button>
+						</div>
+					</div>
+				</div>
 			{:else}
-				<div class="flex-1 flex flex-col items-center justify-center gap-3">
+				<div class="flex-1 flex items-center justify-center">
 					{#if startingSession}
-						<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
-						<p class="text-sm text-muted-foreground">Starting session...</p>
+						<div class="flex flex-col items-center gap-3">
+							<Loader2 class="h-5 w-5 text-muted-foreground animate-spin" />
+							<p class="text-sm text-muted-foreground">Starting session...</p>
+						</div>
 					{:else}
-						<p class="text-sm text-muted-foreground">Send a message to start a new session.</p>
+						<div class="flex flex-col items-center gap-4">
+							<p class="text-sm text-muted-foreground">Start a phase or send a message</p>
+							<div class="flex gap-2">
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('spec')}
+								>
+									<FileText class="h-4 w-4 text-blue-400" />
+									Spec
+								</button>
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('implement')}
+								>
+									<Code class="h-4 w-4 text-green-400" />
+									Implement
+								</button>
+								<button
+									class="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+									onclick={() => handleStartPhase('review')}
+								>
+									<Eye class="h-4 w-4 text-yellow-400" />
+									Review
+								</button>
+							</div>
+						</div>
 					{/if}
 				</div>
 			{/if}

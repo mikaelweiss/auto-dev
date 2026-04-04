@@ -176,6 +176,14 @@ export async function startSession(repoId: number, issueNumber: number): Promise
 	return invoke('session_start', { repoId, issueNumber });
 }
 
+export async function startImplementSession(repoId: number, issueNumber: number): Promise<void> {
+	return invoke('session_start_implement', { repoId, issueNumber });
+}
+
+export async function startReviewSession(repoId: number, issueNumber: number): Promise<void> {
+	return invoke('session_start_review', { repoId, issueNumber });
+}
+
 export async function respondToSession(sessionId: string, message: string): Promise<void> {
 	return invoke('session_respond', { sessionId, message });
 }
@@ -242,8 +250,8 @@ export async function getPrompts(): Promise<AgentPrompt[]> {
 	return invoke('get_prompts');
 }
 
-export async function updatePrompt(stage: SessionStage, promptText: string): Promise<void> {
-	return invoke('update_prompt', { stage, promptText });
+export async function updatePrompt(stage: SessionStage, promptText: string, model: string, effort: string): Promise<void> {
+	return invoke('update_prompt', { stage, promptText, model, effort });
 }
 
 // Repo Path
