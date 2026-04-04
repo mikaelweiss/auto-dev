@@ -96,6 +96,9 @@ pub fn run() {
             sessions::session_run_test,
             sessions::session_get_logs,
             sessions::session_cleanup,
+            sessions::session_hide,
+            sessions::session_unhide,
+            sessions::session_list_hidden,
             // Settings
             sessions::settings_get,
             sessions::settings_set,

@@ -31,7 +31,7 @@
 			session?.status === 'initializing' ||
 			session?.status === 'setup'
 	);
-	let canSend = $derived(!isRunning && input.trim().length > 0 && session !== null);
+	let canSend = $derived(!isRunning && input.trim().length > 0);
 
 	const slashCommands = [
 		{ name: 'test', description: 'Run tests for this session' },
@@ -198,11 +198,15 @@
 	}
 
 	async function handleSend() {
-		if (!canSend || !session) return;
+		if (!canSend) return;
 		const message = input.trim();
 		input = '';
 		autoResize();
-		await backend.respondToSession(session.id, message);
+		if (session) {
+			await backend.respondToSession(session.id, message);
+		} else {
+			onNewSession();
+		}
 	}
 
 	async function handleStop() {

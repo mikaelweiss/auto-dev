@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { selectedIssue } from '$lib/stores/ui';
-	import { sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
+	import { sessions, sessionsByIssue, sessionLogs } from '$lib/stores/sessions';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import type { Session } from '$lib/types';
-	import { X, ExternalLink, Plus, Info } from 'lucide-svelte';
+	import { X, ExternalLink, Plus, Info, History } from 'lucide-svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ChatInput from './ChatInput.svelte';
 
@@ -21,6 +21,10 @@
 	let showDetails = $state(false);
 	let editingBody = $state(false);
 	let bodyDraft = $state('');
+	let confirmHideSessionId: string | null = $state(null);
+	let showHistory = $state(false);
+	let hiddenSessions: Session[] = $state([]);
+	let historyLoading = $state(false);
 
 	// Auto-select the most recent session, or follow new sessions as they appear
 	let prevSessionCount = 0;
@@ -52,12 +56,78 @@
 			showDetails = false;
 			editingBody = false;
 			bodyDraft = issue.body;
+			showHistory = false;
+			confirmHideSessionId = null;
+			hiddenSessions = [];
 		}
 	});
 
 	let activeSession: Session | null = $derived(
 		allSessions.find((s) => s.id === selectedSessionId) ?? null
 	);
+
+	function timeAgo(dateStr: string): string {
+		const now = Date.now();
+		const then = new Date(dateStr).getTime();
+		const diffMs = now - then;
+		const minutes = Math.floor(diffMs / 60000);
+		if (minutes < 1) return 'just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	}
+
+	function handleHideSession(sessionId: string) {
+		const sess = allSessions.find((s) => s.id === sessionId);
+		if (
+			sess &&
+			(sess.status === 'running' || sess.status === 'initializing' || sess.status === 'setup')
+		) {
+			confirmHideSessionId = sessionId;
+			return;
+		}
+		backend.hideSession(sessionId);
+		sessions.update((all) => all.map((s) => (s.id === sessionId ? { ...s, hidden: true } : s)));
+		if (selectedSessionId === sessionId) {
+			const remaining = allSessions.filter((s) => s.id !== sessionId);
+			selectedSessionId = remaining.length > 0 ? remaining[0].id : null;
+		}
+	}
+
+	async function confirmHideRunningSession() {
+		if (!confirmHideSessionId) return;
+		const idToHide = confirmHideSessionId;
+		await backend.stopSession(idToHide);
+		await backend.hideSession(idToHide);
+		sessions.update((all) => all.map((s) => (s.id === idToHide ? { ...s, hidden: true } : s)));
+		confirmHideSessionId = null;
+		if (selectedSessionId === idToHide) {
+			const remaining = allSessions.filter((s) => s.id !== idToHide);
+			selectedSessionId = remaining.length > 0 ? remaining[0].id : null;
+		}
+	}
+
+	async function handleRestoreSession(sessionId: string) {
+		await backend.unhideSession(sessionId);
+		sessions.update((all) => all.map((s) => (s.id === sessionId ? { ...s, hidden: false } : s)));
+		hiddenSessions = hiddenSessions.filter((s) => s.id !== sessionId);
+		selectedSessionId = sessionId;
+	}
+
+	async function toggleHistory() {
+		showHistory = !showHistory;
+		if (showHistory && repoConfig && issue) {
+			historyLoading = true;
+			try {
+				hiddenSessions = await backend.listHiddenSessions(repoConfig.id, issue.number);
+			} catch {
+				hiddenSessions = [];
+			}
+			historyLoading = false;
+		}
+	}
 
 	function close() {
 		selectedIssue.set(null);
@@ -277,40 +347,106 @@
 			{/if}
 
 			<!-- Session tabs -->
-			{#if allSessions.length > 0}
-				<div class="shrink-0 px-4 py-2 border-b border-border flex items-center gap-2">
-					<div class="flex gap-1 flex-1 overflow-x-auto">
-						{#each allSessions as sess (sess.id)}
-							<button
-								class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
-									{sess.id === selectedSessionId
-									? 'bg-muted text-foreground'
-									: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
-								onclick={() => {
-									selectedSessionId = sess.id;
-								}}
-							>
-								<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
-								{sess.stage}{allSessions.filter((s) => s.stage === sess.stage).length > 1
-									? ` #${allSessions.filter((s) => s.stage === sess.stage).indexOf(sess) + 1}`
-									: ''}
-								{#if sess.id === selectedSessionId}
-									<span class="text-muted-foreground font-normal ml-0.5">
-										{elapsedTime(sess.started_at, sess.completed_at)}
+				<div class="shrink-0 border-b border-border">
+					<div class="px-4 py-2 flex items-center gap-2">
+						<div class="flex gap-1 flex-1 overflow-x-auto">
+							{#each allSessions as sess (sess.id)}
+								<button
+									class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors
+										{sess.id === selectedSessionId
+										? 'bg-muted text-foreground'
+										: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
+									onclick={() => {
+										selectedSessionId = sess.id;
+									}}
+								>
+									<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
+									{sess.stage}{allSessions.filter((s) => s.stage === sess.stage).length > 1
+										? ` #${allSessions.filter((s) => s.stage === sess.stage).indexOf(sess) + 1}`
+										: ''}
+									{#if sess.id === selectedSessionId}
+										<span class="text-muted-foreground font-normal ml-0.5">
+											{elapsedTime(sess.started_at, sess.completed_at)}
+										</span>
+									{/if}
+									<span
+										role="button"
+										tabindex="0"
+										class="ml-0.5 p-0.5 rounded hover:bg-background/50 opacity-0 group-hover:opacity-100 transition-opacity"
+										onclick={(e) => { e.stopPropagation(); handleHideSession(sess.id); }}
+										onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleHideSession(sess.id); } }}
+										title="Close tab"
+									>
+										<X class="h-3 w-3" />
 									</span>
-								{/if}
+								</button>
+							{/each}
+						</div>
+						<button
+							class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+							onclick={handleNewSession}
+							title="New session"
+						>
+							<Plus class="h-3.5 w-3.5" />
+						</button>
+						<div class="relative">
+							<button
+								class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0 {showHistory ? 'bg-muted text-foreground' : ''}"
+								onclick={toggleHistory}
+								title="Session history"
+							>
+								<History class="h-3.5 w-3.5" />
 							</button>
-						{/each}
+
+							<!-- History popover -->
+							{#if showHistory}
+								<div class="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-border bg-popover shadow-lg overflow-hidden">
+									{#if historyLoading}
+										<div class="px-3 py-2 text-xs text-muted-foreground">Loading...</div>
+									{:else if hiddenSessions.length === 0}
+										<div class="px-3 py-2 text-xs text-muted-foreground">No closed sessions.</div>
+									{:else}
+										<div class="max-h-48 overflow-y-auto">
+											{#each hiddenSessions as sess (sess.id)}
+												<div class="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/50 transition-colors">
+													<span class="h-2 w-2 rounded-full shrink-0 {statusDotClass(sess.status)}"></span>
+													<span class="text-xs font-medium text-foreground flex-1 truncate">{sess.stage}</span>
+													<span class="text-[10px] text-muted-foreground whitespace-nowrap">{timeAgo(sess.started_at)}</span>
+													<button
+														class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+														onclick={() => handleRestoreSession(sess.id)}
+														title="Restore session"
+													>
+														<History class="h-3 w-3" />
+													</button>
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
+							{/if}
+						</div>
 					</div>
-					<button
-						class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
-						onclick={handleNewSession}
-						title="New session"
-					>
-						<Plus class="h-3.5 w-3.5" />
-					</button>
+
+					<!-- Confirmation bar for closing running sessions -->
+					{#if confirmHideSessionId}
+						<div class="border-t border-border bg-red-500/5 px-4 py-3 flex items-center gap-3">
+							<span class="text-xs text-foreground flex-1">Stop running agent and close tab?</span>
+							<button
+								class="px-2.5 py-1 rounded-md text-xs font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
+								onclick={confirmHideRunningSession}
+							>
+								Stop & close
+							</button>
+							<button
+								class="px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+								onclick={() => { confirmHideSessionId = null; }}
+							>
+								Cancel
+							</button>
+						</div>
+					{/if}
 				</div>
-			{/if}
 
 			<!-- Error banner -->
 			{#if activeSession?.error_message}
@@ -322,13 +458,13 @@
 			{/if}
 
 			<!-- Agent log -->
-			{#if allSessions.length > 0 && activeSession}
+			{#if activeSession}
 				<div class="flex-1 min-h-0 flex flex-col overflow-hidden">
 					<AgentLog sessionId={activeSession.id} />
 				</div>
 			{:else}
 				<div class="flex-1 flex items-center justify-center">
-					<p class="text-sm text-muted-foreground">No sessions yet.</p>
+					<p class="text-sm text-muted-foreground">Send a message to start a new session.</p>
 				</div>
 			{/if}
 

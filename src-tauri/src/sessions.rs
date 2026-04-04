@@ -52,6 +52,40 @@ pub async fn session_list(
     Ok(sessions)
 }
 
+#[tauri::command]
+pub async fn session_hide(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::hide_session(&db, session_db_id)
+}
+
+#[tauri::command]
+pub async fn session_unhide(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_db_id: i64 = session_id
+        .parse()
+        .map_err(|_| "Invalid session ID".to_string())?;
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::unhide_session(&db, session_db_id)
+}
+
+#[tauri::command]
+pub async fn session_list_hidden(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+    issue_number: i64,
+) -> Result<Vec<Session>, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::get_hidden_sessions(&db, repo_id, issue_number)
+}
+
 /// Helper to emit a session-status event to the frontend.
 fn emit_session_status(app_handle: &tauri::AppHandle, session: &Session) {
     let _ = app_handle.emit("session-status", session);
@@ -87,6 +121,7 @@ pub async fn session_start(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -190,9 +225,21 @@ pub async fn session_start(
     // Spawn claude in background
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
+    let owner = repo.owner.clone();
+    let name = repo.name.clone();
     let user_prompt = format!(
-        "GitHub Issue #{issue_number}\n\nAnalyze this issue and the codebase, then write a detailed spec comment."
+        "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
+         Follow the spec process: check for an existing spec in the issue comments, \
+         explore the codebase, and produce or update the spec. \
+         Use `gh` CLI for all GitHub interactions (comments, labels). \
+         The repo is {owner}/{name} and the issue number is {issue_number}."
     );
+
+    let permission_mode = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let settings = db::get_app_settings(&db)?;
+        if settings.bypass_permissions { "bypassPermissions" } else { "auto" }
+    }.to_string();
 
     tokio::spawn(async move {
         let result = run_claude_session(
@@ -200,7 +247,7 @@ pub async fn session_start(
             &wt_path,
             &spec_prompt,
             &user_prompt,
-            "plan",
+            &permission_mode,
             None,
             session_db_id,
             &app,
@@ -227,20 +274,6 @@ pub async fn session_start(
                         },
                     },
                 );
-
-                // Check if output contains questions
-                let has_questions = res.output.to_lowercase().contains("question")
-                    || res.output.to_lowercase().contains("?");
-
-                if has_questions {
-                    let _ = app.emit(
-                        "session-blocked",
-                        serde_json::json!({
-                            "session_id": session_db_id.to_string(),
-                            "question": res.output,
-                        }),
-                    );
-                }
             }
             Err(e) => {
                 update_status_via_app(&app, session_db_id, "failed", Some(&e));
@@ -313,6 +346,7 @@ pub async fn session_start_implement(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -463,6 +497,7 @@ pub async fn session_start_review(
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
         completed_at: None,
+        hidden: false,
     };
 
     let session_db_id = {
@@ -1077,7 +1112,6 @@ fn format_tool_summary(name: &str, input: &Value) -> String {
 
 /// Result from running a Claude session, including the captured CLI session ID.
 struct ClaudeSessionResult {
-    output: String,
     /// The Claude CLI session ID captured from the stream output, if available.
     cli_session_id: Option<String>,
 }
@@ -1126,7 +1160,6 @@ async fn run_claude_session(
     let stderr = child.stderr.take();
 
     let mut reader = BufReader::new(stdout).lines();
-    let mut full_output = String::new();
     let mut cli_session_id: Option<String> = None;
 
     while let Some(line) = reader
@@ -1147,9 +1180,6 @@ async fn run_claude_session(
         let entries = parse_stream_json_line(&line);
 
         for (event_type, content) in entries {
-            full_output.push_str(&content);
-            full_output.push('\n');
-
             // Persist log to DB
             insert_log_via_app(app_handle, session_db_id, &event_type, &content);
 
@@ -1193,7 +1223,6 @@ async fn run_claude_session(
     }
 
     Ok(ClaudeSessionResult {
-        output: full_output,
         cli_session_id,
     })
 }

@@ -166,6 +166,26 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         eprintln!("[DB] session_logs migration complete");
     }
 
+    // Migration: add hidden column to sessions
+    let has_hidden: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .map(|sql| sql.contains("hidden"))
+        .unwrap_or(false);
+
+    if !has_hidden {
+        eprintln!("[DB] Migrating sessions table: adding hidden column");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;",
+        )
+        .map_err(|e| format!("Failed to add hidden column: {e}"))?;
+        eprintln!("[DB] hidden column migration complete");
+    }
+
     Ok(())
 }
 
@@ -173,23 +193,35 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
     let defaults: &[(&str, &str)] = &[
         (
             "spec",
-            "You are an AI developer analyzing a GitHub issue to produce a specification.\n\n\
+            "You are an AI developer analyzing a GitHub issue to produce a specification.\n\
+             You have access to the `gh` CLI for interacting with GitHub.\n\n\
              ## Process\n\
-             1. Read the issue thoroughly — understand the problem, not just the title.\n\
-             2. Explore the codebase to understand the architecture, conventions, and relevant code paths.\n\
-             3. Identify all files that will need to change and any new files that need to be created.\n\
-             4. Write a specification comment on the issue.\n\n\
+             1. Check for an existing spec by reading the issue's comments:\n\
+             \x20  `gh api repos/{owner}/{repo}/issues/{number}/comments --jq '.[].body'`\n\
+             \x20  Look for a comment that starts with \"## Spec\" or contains a specification.\n\
+             2. **If an existing spec is found**: Present it to the user and ask if there's anything they'd like to update. If they confirm it's good, skip to step 6.\n\
+             3. **If no spec exists**: Read the issue thoroughly and explore the codebase to understand the architecture, conventions, and relevant code paths.\n\
+             4. If you have blocking questions that prevent you from writing the spec:\n\
+             \x20  a. Post a comment on the issue with your questions: `gh issue comment {number} -R {owner}/{repo} --body \"## Questions\\n\\n...\"`\n\
+             \x20  b. Add the blocked label: `gh issue edit {number} -R {owner}/{repo} --add-label \"autodev:blocked\"`\n\
+             \x20  c. Remove the planning label if present: `gh issue edit {number} -R {owner}/{repo} --remove-label \"autodev:planning\"`\n\
+             \x20  d. Stop and tell the user you've posted questions on the issue.\n\
+             5. Write the spec and post it as a comment on the issue:\n\
+             \x20  `gh issue comment {number} -R {owner}/{repo} --body \"## Spec\\n\\n...\"`\n\
+             6. Move the issue to in-progress to trigger implementation:\n\
+             \x20  a. Add the in-progress label: `gh issue edit {number} -R {owner}/{repo} --add-label \"autodev:in-progress\"`\n\
+             \x20  b. Remove planning/blocked labels if present: `gh issue edit {number} -R {owner}/{repo} --remove-label \"autodev:planning\" --remove-label \"autodev:blocked\"`\n\n\
              ## Specification format\n\
              Your spec comment should include:\n\
              - **Summary**: One-sentence description of what this change does.\n\
              - **Relevant files**: List every file you expect to touch, with a brief note on what changes.\n\
              - **Approach**: Step-by-step plan for the implementation. Be specific — reference functions, types, and modules by name.\n\
-             - **Edge cases**: Anything that could go wrong or needs special handling.\n\
-             - **Questions**: If anything is ambiguous, list your questions clearly. If you have no questions, say \"No questions — ready to implement.\"\n\n\
+             - **Edge cases**: Anything that could go wrong or needs special handling.\n\n\
              ## Rules\n\
              - Do NOT make any code changes. This is a read-only analysis stage.\n\
              - Do NOT guess at implementation details you haven't verified by reading the code.\n\
-             - Keep the spec concise and actionable — a developer should be able to implement from it.",
+             - Keep the spec concise and actionable — a developer should be able to implement from it.\n\
+             - Always use the `gh` CLI to interact with GitHub — never modify labels or comments through any other means.",
         ),
         (
             "implement",
@@ -542,33 +574,35 @@ pub fn update_session_cli_id(
     Ok(())
 }
 
+fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
+    Ok(Session {
+        id: format!("{}", row.get::<_, i64>(0)?),
+        repo_id: row.get(1)?,
+        issue_number: row.get(2)?,
+        stage: row.get(3)?,
+        worktree_path: row.get(4)?,
+        session_id: row.get(5)?,
+        status: row.get(6)?,
+        error_message: row.get(7)?,
+        started_at: row.get(8)?,
+        completed_at: row.get(9)?,
+        hidden: row.get::<_, i64>(10).unwrap_or(0) != 0,
+    })
+}
+
+const SESSION_COLS: &str = "id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at, hidden";
+
 pub fn get_active_session(
     conn: &Connection,
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Option<Session>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status IN ('running', 'initializing', 'setup')
-             ORDER BY started_at DESC LIMIT 1",
-        )
-        .map_err(|e| format!("Failed to query session: {e}"))?;
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND status IN ('running', 'initializing', 'setup') ORDER BY started_at DESC LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to query session: {e}"))?;
 
-    let result = stmt.query_row(params![repo_id, issue_number], |row| {
-        Ok(Session {
-            id: format!("{}", row.get::<_, i64>(0)?),
-            repo_id: row.get(1)?,
-            issue_number: row.get(2)?,
-            stage: row.get(3)?,
-            worktree_path: row.get(4)?,
-            session_id: row.get(5)?,
-            status: row.get(6)?,
-            error_message: row.get(7)?,
-            started_at: row.get(8)?,
-            completed_at: row.get(9)?,
-        })
-    });
+    let result = stmt.query_row(params![repo_id, issue_number], row_to_session);
 
     match result {
         Ok(s) => Ok(Some(s)),
@@ -582,28 +616,12 @@ pub fn get_latest_session(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Option<Session>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions WHERE repo_id = ?1 AND issue_number = ?2
-             ORDER BY started_at DESC LIMIT 1",
-        )
-        .map_err(|e| format!("Failed to query session: {e}"))?;
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 ORDER BY started_at DESC LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to query session: {e}"))?;
 
-    let result = stmt.query_row(params![repo_id, issue_number], |row| {
-        Ok(Session {
-            id: format!("{}", row.get::<_, i64>(0)?),
-            repo_id: row.get(1)?,
-            issue_number: row.get(2)?,
-            stage: row.get(3)?,
-            worktree_path: row.get(4)?,
-            session_id: row.get(5)?,
-            status: row.get(6)?,
-            error_message: row.get(7)?,
-            started_at: row.get(8)?,
-            completed_at: row.get(9)?,
-        })
-    });
+    let result = stmt.query_row(params![repo_id, issue_number], row_to_session);
 
     match result {
         Ok(s) => Ok(Some(s)),
@@ -613,27 +631,10 @@ pub fn get_latest_session(
 }
 
 pub fn get_session_by_id(conn: &Connection, session_id: i64) -> Result<Option<Session>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions WHERE id = ?1",
-        )
-        .map_err(|e| format!("Failed to query session: {e}"))?;
+    let sql = format!("SELECT {SESSION_COLS} FROM sessions WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to query session: {e}"))?;
 
-    let result = stmt.query_row(params![session_id], |row| {
-        Ok(Session {
-            id: format!("{}", row.get::<_, i64>(0)?),
-            repo_id: row.get(1)?,
-            issue_number: row.get(2)?,
-            stage: row.get(3)?,
-            worktree_path: row.get(4)?,
-            session_id: row.get(5)?,
-            status: row.get(6)?,
-            error_message: row.get(7)?,
-            started_at: row.get(8)?,
-            completed_at: row.get(9)?,
-        })
-    });
+    let result = stmt.query_row(params![session_id], row_to_session);
 
     match result {
         Ok(s) => Ok(Some(s)),
@@ -643,28 +644,11 @@ pub fn get_session_by_id(conn: &Connection, session_id: i64) -> Result<Option<Se
 }
 
 pub fn get_all_sessions(conn: &Connection) -> Result<Vec<Session>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, repo_id, issue_number, stage, worktree_path, session_id, status, error_message, started_at, completed_at
-             FROM sessions ORDER BY started_at DESC",
-        )
-        .map_err(|e| format!("Failed to query sessions: {e}"))?;
+    let sql = format!("SELECT {SESSION_COLS} FROM sessions WHERE hidden = 0 ORDER BY started_at DESC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to query sessions: {e}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
-            Ok(Session {
-                id: format!("{}", row.get::<_, i64>(0)?),
-                repo_id: row.get(1)?,
-                issue_number: row.get(2)?,
-                stage: row.get(3)?,
-                worktree_path: row.get(4)?,
-                session_id: row.get(5)?,
-                status: row.get(6)?,
-                error_message: row.get(7)?,
-                started_at: row.get(8)?,
-                completed_at: row.get(9)?,
-            })
-        })
+        .query_map([], row_to_session)
         .map_err(|e| format!("Failed to query sessions: {e}"))?;
 
     let mut sessions = Vec::new();
@@ -672,6 +656,41 @@ pub fn get_all_sessions(conn: &Connection) -> Result<Vec<Session>, String> {
         sessions.push(row.map_err(|e| format!("Failed to read session row: {e}"))?);
     }
     Ok(sessions)
+}
+
+pub fn get_hidden_sessions(conn: &Connection, repo_id: i64, issue_number: i64) -> Result<Vec<Session>, String> {
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM sessions WHERE repo_id = ?1 AND issue_number = ?2 AND hidden = 1 ORDER BY started_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to query hidden sessions: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![repo_id, issue_number], row_to_session)
+        .map_err(|e| format!("Failed to query hidden sessions: {e}"))?;
+
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row.map_err(|e| format!("Failed to read session row: {e}"))?);
+    }
+    Ok(sessions)
+}
+
+pub fn hide_session(conn: &Connection, session_db_id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sessions SET hidden = 1 WHERE id = ?1",
+        params![session_db_id],
+    )
+    .map_err(|e| format!("Failed to hide session: {e}"))?;
+    Ok(())
+}
+
+pub fn unhide_session(conn: &Connection, session_db_id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sessions SET hidden = 0 WHERE id = ?1",
+        params![session_db_id],
+    )
+    .map_err(|e| format!("Failed to unhide session: {e}"))?;
+    Ok(())
 }
 
 // ── Session Logs ────────────────────────────────────────────────────────

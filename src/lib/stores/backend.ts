@@ -269,6 +269,19 @@ export async function setSelectedRepoId(repoId: number): Promise<void> {
 	return invoke('set_selected_repo_id', { repoId });
 }
 
+// Session visibility
+export async function hideSession(sessionId: string): Promise<void> {
+	return invoke('session_hide', { sessionId });
+}
+
+export async function unhideSession(sessionId: string): Promise<void> {
+	return invoke('session_unhide', { sessionId });
+}
+
+export async function listHiddenSessions(repoId: number, issueNumber: number): Promise<Session[]> {
+	return invoke('session_list_hidden', { repoId, issueNumber });
+}
+
 // Session Files
 export async function listSessionFiles(sessionId: string): Promise<string[]> {
 	return invoke('session_list_files', { sessionId });
