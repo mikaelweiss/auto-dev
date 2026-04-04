@@ -2,7 +2,7 @@
 	import { sessionLogs } from '$lib/stores/sessions';
 	import { fetchSessionLogs } from '$lib/stores/backend';
 	import type { SessionLogEntry } from '$lib/types';
-	import { Wrench, AlertCircle, ChevronRight, ChevronDown, Terminal, Loader2 } from 'lucide-svelte';
+	import { Wrench, AlertCircle, AlertTriangle, Sparkles, Activity, ChevronRight, ChevronDown, Terminal, Loader2 } from 'lucide-svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	let { sessionId, sessionStatus = 'running', sessionStage = '' }: { sessionId: string; sessionStatus?: string; sessionStage?: string } = $props();
@@ -11,7 +11,7 @@
 
 	let container: HTMLDivElement | undefined = $state(undefined);
 
-	const NOISE_TYPES = new Set(['user', 'rate_limit_event', 'system']);
+	const NOISE_TYPES = new Set(['user', 'system']);
 	let logs = $derived(
 		($sessionLogs.get(sessionId) ?? []).filter((e) => !NOISE_TYPES.has(e.event_type))
 	);
@@ -65,21 +65,34 @@
 		| { kind: 'error'; entry: SessionLogEntry }
 		| { kind: 'status_change'; entry: SessionLogEntry }
 		| { kind: 'test_output'; entry: SessionLogEntry }
-		| { kind: 'tool_calls'; entries: SessionLogEntry[] };
+		| { kind: 'tool_calls'; entries: SessionLogEntry[] }
+		| { kind: 'thinking'; entries: SessionLogEntry[] }
+		| { kind: 'result'; entry: SessionLogEntry }
+		| { kind: 'rate_limit'; entry: SessionLogEntry }
+		| { kind: 'api_retry'; entry: SessionLogEntry }
+		| { kind: 'task_progress'; entry: SessionLogEntry };
 
 	let groups = $derived.by((): LogGroup[] => {
 		const result: LogGroup[] = [];
 		let i = 0;
 		while (i < logs.length) {
 			const entry = logs[i];
-			if (entry.event_type === 'tool_call') {
+			if (entry.event_type === 'tool_call' || entry.event_type === 'tool_progress') {
 				const batch: SessionLogEntry[] = [entry];
 				i++;
-				while (i < logs.length && logs[i].event_type === 'tool_call') {
+				while (i < logs.length && (logs[i].event_type === 'tool_call' || logs[i].event_type === 'tool_progress')) {
 					batch.push(logs[i]);
 					i++;
 				}
 				result.push({ kind: 'tool_calls', entries: batch });
+			} else if (entry.event_type === 'thinking') {
+				const batch: SessionLogEntry[] = [entry];
+				i++;
+				while (i < logs.length && logs[i].event_type === 'thinking') {
+					batch.push(logs[i]);
+					i++;
+				}
+				result.push({ kind: 'thinking', entries: batch });
 			} else if (entry.event_type === 'message') {
 				result.push({ kind: 'message', entry });
 				i++;
@@ -91,6 +104,18 @@
 				i++;
 			} else if (entry.event_type === 'test_output') {
 				result.push({ kind: 'test_output', entry });
+				i++;
+			} else if (entry.event_type === 'result') {
+				result.push({ kind: 'result', entry });
+				i++;
+			} else if (entry.event_type === 'rate_limit') {
+				result.push({ kind: 'rate_limit', entry });
+				i++;
+			} else if (entry.event_type === 'api_retry') {
+				result.push({ kind: 'api_retry', entry });
+				i++;
+			} else if (entry.event_type === 'task_progress') {
+				result.push({ kind: 'task_progress', entry });
 				i++;
 			} else {
 				result.push({ kind: 'message', entry });
@@ -202,6 +227,66 @@
 						<span class="text-[10px] text-muted-foreground uppercase tracking-wider">Test Output</span>
 					</div>
 					<pre class="text-xs font-mono bg-muted/50 rounded-md p-3 overflow-x-auto text-foreground/80 whitespace-pre-wrap break-words border border-border/50">{group.entry.content}</pre>
+				</div>
+
+			{:else if group.kind === 'thinking'}
+				<!-- Thinking: collapsible section with purple tint -->
+				<div class="px-2">
+					<button
+						type="button"
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 text-xs text-violet-400 hover:bg-violet-500/20 hover:text-violet-300 transition-colors"
+						onclick={() => toggleGroup(groupIndex)}
+					>
+						{#if expandedGroups.has(groupIndex)}
+							<ChevronDown class="h-3 w-3" />
+						{:else}
+							<ChevronRight class="h-3 w-3" />
+						{/if}
+						<Sparkles class="h-3 w-3" />
+						Thinking...
+					</button>
+					{#if expandedGroups.has(groupIndex)}
+						<div class="mt-1.5 ml-2 pl-3 border-l-2 border-violet-500/30 space-y-1">
+							{#each group.entries as thinkEntry (thinkEntry.id)}
+								<p class="text-xs text-violet-300/80 leading-relaxed whitespace-pre-wrap">{thinkEntry.content}</p>
+							{/each}
+						</div>
+					{/if}
+				</div>
+
+			{:else if group.kind === 'result'}
+				<!-- Result: subtle monospace summary -->
+				<div class="mx-2 text-xs text-muted-foreground font-mono bg-muted/30 rounded px-2.5 py-1">{group.entry.content}</div>
+
+			{:else if group.kind === 'rate_limit'}
+				<!-- Rate limit: amber warning box -->
+				<div class="mx-2 flex items-start gap-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20">
+					<AlertTriangle class="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+					<div class="min-w-0">
+						<p class="text-sm text-amber-400 break-words">{group.entry.content}</p>
+						<span class="text-[10px] text-amber-400/50 mt-0.5 block">{formatTime(group.entry.timestamp)}</span>
+					</div>
+				</div>
+
+			{:else if group.kind === 'api_retry'}
+				<!-- API retry: amber warning box -->
+				<div class="mx-2 flex items-start gap-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20">
+					<AlertTriangle class="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+					<div class="min-w-0">
+						<p class="text-sm text-amber-400 break-words">{group.entry.content}</p>
+						<span class="text-[10px] text-amber-400/50 mt-0.5 block">{formatTime(group.entry.timestamp)}</span>
+					</div>
+				</div>
+
+			{:else if group.kind === 'task_progress'}
+				<!-- Task progress: centered divider with activity icon -->
+				<div class="flex items-center gap-3 px-2 py-1">
+					<div class="flex-1 h-px bg-border"></div>
+					<span class="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground/60 uppercase tracking-wider whitespace-nowrap">
+						<Activity class="h-3 w-3" />
+						{group.entry.content}
+					</span>
+					<div class="flex-1 h-px bg-border"></div>
 				</div>
 			{/if}
 		{/each}

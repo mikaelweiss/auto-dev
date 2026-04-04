@@ -43,13 +43,25 @@ export interface Session {
 	started_at: string;
 	completed_at: string | null;
 	hidden: boolean;
+	cost_usd: number | null;
 }
 
 export interface SessionLogEntry {
 	id: string;
 	session_id: string;
 	timestamp: string;
-	event_type: 'tool_call' | 'message' | 'error' | 'status_change' | 'test_output';
+	event_type:
+		| 'tool_call'
+		| 'message'
+		| 'error'
+		| 'status_change'
+		| 'test_output'
+		| 'thinking'
+		| 'result'
+		| 'rate_limit'
+		| 'api_retry'
+		| 'task_progress'
+		| 'tool_progress';
 	content: string;
 }
 

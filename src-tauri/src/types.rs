@@ -52,6 +52,8 @@ pub struct Session {
     pub completed_at: Option<String>,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
