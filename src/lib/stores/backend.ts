@@ -10,7 +10,8 @@ import type {
 	RepoRemovalInfo,
 	AppSettings,
 	AgentPrompt,
-	SessionStage
+	SessionStage,
+	ModelInfo
 } from '$lib/types';
 import { issues } from './issues';
 import { sessions, sessionLogs } from './sessions';
@@ -172,8 +173,20 @@ export async function createIssue(
 }
 
 // Sessions
-export async function startSession(repoId: number, issueNumber: number, message?: string): Promise<void> {
-	return invoke('session_start', { repoId, issueNumber, message: message ?? null });
+export async function startSession(
+	repoId: number,
+	issueNumber: number,
+	message?: string,
+	modelOverride?: string,
+	effortOverride?: string
+): Promise<void> {
+	return invoke('session_start', {
+		repoId,
+		issueNumber,
+		message: message ?? null,
+		modelOverride: modelOverride ?? null,
+		effortOverride: effortOverride ?? null
+	});
 }
 
 export async function startImplementSession(repoId: number, issueNumber: number): Promise<void> {
@@ -184,8 +197,18 @@ export async function startReviewSession(repoId: number, issueNumber: number): P
 	return invoke('session_start_review', { repoId, issueNumber });
 }
 
-export async function respondToSession(sessionId: string, message: string): Promise<void> {
-	return invoke('session_respond', { sessionId, message });
+export async function respondToSession(
+	sessionId: string,
+	message: string,
+	modelOverride?: string,
+	effortOverride?: string
+): Promise<void> {
+	return invoke('session_respond', {
+		sessionId,
+		message,
+		modelOverride: modelOverride ?? null,
+		effortOverride: effortOverride ?? null
+	});
 }
 
 export async function retrySession(sessionId: string): Promise<void> {
@@ -238,20 +261,24 @@ export async function runTest(sessionId: string): Promise<void> {
 
 // Settings
 export async function getSettings(): Promise<AppSettings> {
-	return invoke('get_settings');
+	return invoke('settings_get');
 }
 
 export async function updateSettings(settings: Partial<AppSettings>): Promise<void> {
-	return invoke('update_settings', { settings });
+	return invoke('settings_set', { settings });
 }
 
 // Prompts
 export async function getPrompts(): Promise<AgentPrompt[]> {
-	return invoke('get_prompts');
+	return invoke('prompts_get');
 }
 
-export async function updatePrompt(stage: SessionStage, promptText: string, model: string, effort: string): Promise<void> {
-	return invoke('update_prompt', { stage, promptText, model, effort });
+export async function updatePrompt(stage: SessionStage, promptText: string, provider: string, model: string, effort: string): Promise<void> {
+	return invoke('prompts_set', { stage, promptText, provider, model, effort });
+}
+
+export async function listModels(): Promise<ModelInfo[]> {
+	return invoke('list_models');
 }
 
 // Repo Path

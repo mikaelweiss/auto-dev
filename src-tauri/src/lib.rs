@@ -3,9 +3,12 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
+mod claude_provider;
+mod codex_provider;
 mod db;
 mod github;
 mod polling;
+mod provider;
 mod sdk_types;
 mod sessions;
 mod sleep;
@@ -104,11 +107,12 @@ pub fn run() {
             sessions::session_hide,
             sessions::session_unhide,
             sessions::session_list_hidden,
-            // Settings
+            // Settings & Models
             sessions::settings_get,
             sessions::settings_set,
             sessions::prompts_get,
             sessions::prompts_set,
+            sessions::list_models,
             sessions::set_repo_path,
             sessions::get_repo_path,
             sessions::get_selected_repo_id,

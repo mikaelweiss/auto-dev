@@ -4,11 +4,10 @@
 	import { appSettings, agentPrompts, loadSettings, loadPrompts } from '$lib/stores/settings';
 	import { repos, selectedRepoId } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
-	import type { SessionStage, AppSettings, AgentModel, AgentEffort } from '$lib/types';
+	import type { SessionStage, AppSettings, ProviderKind } from '$lib/types';
+	import { getModelInfo, getProviderForModel } from '$lib/types';
 	import { X } from 'lucide-svelte';
-
-	const MODELS: AgentModel[] = ['haiku', 'sonnet', 'opus'];
-	const EFFORTS: AgentEffort[] = ['low', 'medium', 'high', 'max'];
+	import ModelPicker from './ModelPicker.svelte';
 
 	// Local copies of settings for editing
 	let localSettings = $state<AppSettings>({
@@ -27,15 +26,15 @@
 		merge_conflict: ''
 	});
 
-	let localModels = $state<Record<SessionStage, AgentModel>>({
-		spec: 'haiku',
-		implement: 'haiku',
-		review: 'haiku',
-		ci_fix: 'haiku',
-		merge_conflict: 'haiku'
+	let localModels = $state<Record<SessionStage, string>>({
+		spec: 'claude-sonnet-4-6',
+		implement: 'claude-sonnet-4-6',
+		review: 'claude-sonnet-4-6',
+		ci_fix: 'claude-sonnet-4-6',
+		merge_conflict: 'claude-sonnet-4-6'
 	});
 
-	let localEfforts = $state<Record<SessionStage, AgentEffort>>({
+	let localEfforts = $state<Record<SessionStage, string>>({
 		spec: 'high',
 		implement: 'high',
 		review: 'high',
@@ -73,6 +72,7 @@
 				localEfforts[prompt.stage] = prompt.effort;
 			}
 
+
 			if (selectedRepo) {
 				repoSetupScript = selectedRepo.setup_script;
 				repoRunScript = selectedRepo.run_script;
@@ -101,7 +101,8 @@
 
 	function saveAllPrompts() {
 		for (const stage of STAGES) {
-			backend.updatePrompt(stage, localPrompts[stage], localModels[stage], localEfforts[stage]);
+			const provider = getProviderForModel(localModels[stage]);
+			backend.updatePrompt(stage, localPrompts[stage], provider, localModels[stage], localEfforts[stage]);
 		}
 	}
 </script>
@@ -246,17 +247,30 @@
 				<!-- Agent Config Tab -->
 				<Tabs.Content value="prompts" class="flex-1 overflow-y-auto p-4 space-y-4">
 					{#each STAGES as stage (stage)}
+						{@const modelInfo = getModelInfo(localModels[stage])}
+						{@const effortLevels = modelInfo?.effort_levels ?? ['low', 'medium', 'high', 'max']}
 						<div class="rounded-lg border border-border p-3 space-y-3">
 							<div class="flex items-center justify-between">
 								<p class="text-sm font-semibold text-foreground">{STAGE_LABELS[stage]}</p>
 								<div class="flex items-center gap-3">
 									<div class="flex items-center gap-1.5">
 										<span class="text-xs text-muted-foreground">Model</span>
-										{@render segmentedButtons(MODELS, localModels[stage], (v) => { localModels[stage] = v as AgentModel; })}
+										<ModelPicker
+											value={localModels[stage]}
+											onSelect={(v) => {
+												localModels[stage] = v;
+												// Reset effort to default if current effort isn't valid for new model
+												const info = getModelInfo(v);
+												if (info && !info.effort_levels.includes(localEfforts[stage])) {
+													localEfforts[stage] = info.default_effort;
+												}
+											}}
+											compact
+										/>
 									</div>
 									<div class="flex items-center gap-1.5">
 										<span class="text-xs text-muted-foreground">Effort</span>
-										{@render segmentedButtons(EFFORTS, localEfforts[stage], (v) => { localEfforts[stage] = v as AgentEffort; })}
+										{@render segmentedButtons(effortLevels, localEfforts[stage], (v) => { localEfforts[stage] = v; })}
 									</div>
 								</div>
 							</div>

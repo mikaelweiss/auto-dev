@@ -4,6 +4,8 @@ export type SessionStage = 'spec' | 'implement' | 'review' | 'ci_fix' | 'merge_c
 
 export type SessionStatus = 'initializing' | 'setup' | 'running' | 'completed' | 'failed';
 
+export type ProviderKind = 'claude' | 'codex';
+
 export interface GitHubUser {
 	login: string;
 	avatar_url: string;
@@ -44,6 +46,8 @@ export interface Session {
 	completed_at: string | null;
 	hidden: boolean;
 	cost_usd: number | null;
+	provider: ProviderKind;
+	model: string;
 }
 
 export interface SessionLogEntry {
@@ -94,15 +98,52 @@ export interface RepoRemovalInfo {
 	log_count: number;
 }
 
-export type AgentModel = 'haiku' | 'sonnet' | 'opus';
-export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
+export interface ModelInfo {
+	id: string;
+	display_name: string;
+	provider: ProviderKind;
+	default_effort: string;
+	effort_levels: string[];
+}
 
 export interface AgentPrompt {
 	stage: SessionStage;
 	prompt_text: string;
 	is_default: boolean;
-	model: AgentModel;
-	effort: AgentEffort;
+	provider: ProviderKind;
+	model: string;
+	effort: string;
+}
+
+/** All available models, grouped by provider. */
+export const MODEL_REGISTRY: ModelInfo[] = [
+	// Claude models
+	{ id: 'claude-opus-4-6-max-ctx', display_name: 'Opus 4.6 1M', provider: 'claude', default_effort: 'high', effort_levels: ['low', 'medium', 'high', 'max'] },
+	{ id: 'claude-opus-4-6', display_name: 'Opus 4.6', provider: 'claude', default_effort: 'high', effort_levels: ['low', 'medium', 'high', 'max'] },
+	{ id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6', provider: 'claude', default_effort: 'high', effort_levels: ['low', 'medium', 'high', 'max'] },
+	{ id: 'claude-haiku-4-5', display_name: 'Haiku 4.5', provider: 'claude', default_effort: 'high', effort_levels: ['low', 'medium', 'high', 'max'] },
+	// Codex models
+	{ id: 'gpt-5.4', display_name: 'GPT-5.4', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'gpt-5.3-codex-spark', display_name: 'GPT-5.3-Codex-Spark', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'gpt-5.3-codex', display_name: 'GPT-5.3-Codex', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+	{ id: 'gpt-5.2-codex', display_name: 'GPT-5.2-Codex', provider: 'codex', default_effort: 'medium', effort_levels: ['low', 'medium', 'high'] },
+];
+
+export const PROVIDER_LABELS: Record<ProviderKind, string> = {
+	claude: 'Claude Code',
+	codex: 'Codex',
+};
+
+export function getModelInfo(modelId: string): ModelInfo | undefined {
+	return MODEL_REGISTRY.find((m) => m.id === modelId);
+}
+
+export function getModelsForProvider(provider: ProviderKind): ModelInfo[] {
+	return MODEL_REGISTRY.filter((m) => m.provider === provider);
+}
+
+export function getProviderForModel(modelId: string): ProviderKind {
+	return getModelInfo(modelId)?.provider ?? 'claude';
 }
 
 export interface AppSettings {
