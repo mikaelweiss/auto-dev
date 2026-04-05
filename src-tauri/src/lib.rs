@@ -114,6 +114,7 @@ pub fn run() {
             sessions::settings_set,
             sessions::prompts_get,
             sessions::prompts_set,
+            sessions::prompts_reset,
             sessions::list_models,
             sessions::set_repo_path,
             sessions::get_repo_path,

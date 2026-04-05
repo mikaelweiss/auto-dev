@@ -122,6 +122,19 @@
 		backend.updatePrompt(stage, localPrompts[stage], provider, localModels[stage], localEfforts[stage]);
 	}
 
+	// Reset a single stage's prompt to the built-in default
+	async function resetStagePrompt(stage: SessionStage) {
+		const prompt = await backend.resetPrompt(stage);
+		localPrompts[stage] = prompt.prompt_text;
+		localModels[stage] = prompt.model;
+		localEfforts[stage] = prompt.effort;
+		agentPrompts.update((all) => {
+			const idx = all.findIndex((p) => p.stage === stage);
+			if (idx >= 0) all[idx] = prompt;
+			return [...all];
+		});
+	}
+
 	// Auto-save: persist repo settings
 	function persistRepoSettings() {
 		if (!selectedRepo) return;
@@ -297,6 +310,12 @@
 										<span class="text-xs text-muted-foreground">Effort</span>
 										{@render segmentedButtons(effortLevels, localEfforts[stage], (v) => { localEfforts[stage] = v; persistPrompt(stage); })}
 									</div>
+									<button
+										class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+										onclick={() => resetStagePrompt(stage)}
+									>
+										Reset
+									</button>
 								</div>
 							</div>
 							<textarea

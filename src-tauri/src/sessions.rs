@@ -980,6 +980,15 @@ pub async fn prompts_set(
 }
 
 #[tauri::command]
+pub async fn prompts_reset(
+    state: tauri::State<'_, AppState>,
+    stage: String,
+) -> Result<AgentPrompt, String> {
+    let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    db::reset_prompt(&db, &stage)
+}
+
+#[tauri::command]
 pub async fn set_repo_path(
     state: tauri::State<'_, AppState>,
     repo_id: i64,

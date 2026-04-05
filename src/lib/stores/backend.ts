@@ -295,6 +295,10 @@ export async function updatePrompt(stage: SessionStage, promptText: string, prov
 	return invoke('prompts_set', { stage, promptText, provider, model, effort });
 }
 
+export async function resetPrompt(stage: SessionStage): Promise<AgentPrompt> {
+	return invoke('prompts_reset', { stage });
+}
+
 export async function listModels(): Promise<ModelInfo[]> {
 	return invoke('list_models');
 }

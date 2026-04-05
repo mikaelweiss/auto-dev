@@ -970,3 +970,29 @@ pub fn update_prompt(conn: &Connection, stage: &str, prompt_text: &str, provider
     .map_err(|e| format!("Failed to update prompt: {e}"))?;
     Ok(())
 }
+
+pub fn reset_prompt(conn: &Connection, stage: &str) -> Result<AgentPrompt, String> {
+    let default_text = match stage {
+        "spec" => include_str!("../prompts/spec.md"),
+        "implement" => include_str!("../prompts/implement.md"),
+        "review" => include_str!("../prompts/review.md"),
+        "ci_fix" => include_str!("../prompts/ci_fix.md"),
+        "merge_conflict" => include_str!("../prompts/merge_conflict.md"),
+        _ => return Err(format!("Unknown stage: {stage}")),
+    };
+
+    conn.execute(
+        "UPDATE agent_prompts SET prompt_text = ?1, is_default = 1, provider = 'claude', model = 'claude-sonnet-4-6', effort = 'high' WHERE stage = ?2",
+        params![default_text, stage],
+    )
+    .map_err(|e| format!("Failed to reset prompt for {stage}: {e}"))?;
+
+    Ok(AgentPrompt {
+        stage: stage.to_string(),
+        prompt_text: default_text.to_string(),
+        is_default: true,
+        provider: "claude".to_string(),
+        model: "claude-sonnet-4-6".to_string(),
+        effort: "high".to_string(),
+    })
+}
