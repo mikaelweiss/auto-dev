@@ -210,11 +210,11 @@ pub async fn session_start(
         msg.clone()
     } else {
         format!(
-            "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
-             Follow the spec process: check for an existing spec in the issue comments, \
-             explore the codebase, and produce or update the spec. \
-             Use `gh` CLI for all GitHub interactions (comments). \
-             The repo is {owner}/{name} and the issue number is {issue_number}."
+            "GitHub Issue #{issue_number} in {owner}/{name}.\n\n\
+             The repo is {owner}/{name} and the issue number is {issue_number}. \
+             Use `gh` CLI for all GitHub interactions.\n\n\
+             Follow your system prompt instructions exactly. \
+             Remember: you MUST call `advance_to_in_progress()` or `advance_to_blocked()` before finishing."
         )
     };
 
@@ -400,7 +400,9 @@ pub async fn session_start_implement(
     let app = app_handle.clone();
     let wt_path = worktree_path.clone();
     let user_prompt = format!(
-        "GitHub Issue #{issue_number}\n\nImplement the feature described in the issue and spec. Write clean, well-tested code."
+        "GitHub Issue #{issue_number}\n\n\
+         Follow your system prompt instructions exactly. \
+         Remember: you MUST call `advance_to_review()` or `advance_to_blocked()` before finishing."
     );
     let provider_kind = effective_provider;
     let model_for_spawn = stage_model;
@@ -518,7 +520,10 @@ pub async fn session_start_review(
     let owner = repo.owner.clone();
     let name = repo.name.clone();
     let branch_prefix = repo.branch_prefix.clone();
-    let user_prompt = format!("Review this diff and fix any issues:\n\n```diff\n{diff}\n```");
+    let user_prompt = format!(
+        "Review this diff and fix any issues. Follow your system prompt instructions exactly. \
+         If there are blocking issues, call `advance_to_blocked()` before finishing.\n\n```diff\n{diff}\n```"
+    );
     let provider_kind = effective_provider;
     let model_for_spawn = stage_model;
     let effort_for_spawn = stage_effort;
@@ -1177,7 +1182,9 @@ async fn auto_start_implement(app: &tauri::AppHandle, repo_id: i64, issue_number
     crate::sleep::on_session_start(sleep_enabled).await;
 
     let user_prompt = format!(
-        "GitHub Issue #{issue_number}\n\nImplement the feature described in the issue and spec. Write clean, well-tested code."
+        "GitHub Issue #{issue_number}\n\n\
+         Follow your system prompt instructions exactly. \
+         Remember: you MUST call `advance_to_review()` or `advance_to_blocked()` before finishing."
     );
     let mcp_binary = provider::find_mcp_binary();
 
