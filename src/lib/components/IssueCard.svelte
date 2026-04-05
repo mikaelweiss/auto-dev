@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { Issue } from '$lib/types';
-	import { getColumnForIssue } from '$lib/types';
+	import { getColumnForSession } from '$lib/types';
 	import { sessionByIssue } from '$lib/stores/sessions';
+	import { issueStates } from '$lib/stores/issues';
 	import { repos } from '$lib/stores/repos';
 	import { selectedIssue } from '$lib/stores/ui';
 	import * as backend from '$lib/stores/backend';
@@ -9,12 +10,16 @@
 
 	let { issue }: { issue: Issue } = $props();
 
-	let column = $derived(getColumnForIssue(issue));
-
 	let repoConfig = $derived($repos.find((r) => r.owner === issue.repo_owner && r.name === issue.repo_name));
 	let sessionKey = $derived(repoConfig ? `${repoConfig.id}:${issue.number}` : null);
 	let session = $derived(sessionKey ? $sessionByIssue.get(sessionKey) ?? null : null);
 	let hasError = $derived(session?.status === 'failed');
+
+	let column = $derived.by(() => {
+		if (issue.state === 'closed') return 'done';
+		if (session) return getColumnForSession(session);
+		return sessionKey ? ($issueStates.get(sessionKey) ?? 'backlog') : 'backlog';
+	});
 
 	function timeAgo(dateStr: string): string {
 		const now = Date.now();

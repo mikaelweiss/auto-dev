@@ -11,6 +11,7 @@ mod github;
 mod polling;
 mod provider;
 mod sdk_types;
+mod issue_state;
 mod sessions;
 mod sleep;
 mod types;
@@ -87,8 +88,6 @@ pub fn run() {
             // GitHub issues
             github::github_fetch_issues,
             github::github_create_issue,
-            github::github_add_label,
-            github::github_remove_label,
             github::github_post_comment,
             github::github_create_pr,
             github::github_squash_merge,
@@ -118,6 +117,9 @@ pub fn run() {
             sessions::get_repo_path,
             sessions::get_selected_repo_id,
             sessions::set_selected_repo_id,
+            // Issue State
+            issue_state::get_issue_states,
+            issue_state::set_issue_column,
             // Polling
             polling::force_poll,
         ])

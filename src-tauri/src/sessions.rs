@@ -224,7 +224,7 @@ pub async fn session_start(
             "GitHub Issue #{issue_number} in {owner}/{name}\n\n\
              Follow the spec process: check for an existing spec in the issue comments, \
              explore the codebase, and produce or update the spec. \
-             Use `gh` CLI for all GitHub interactions (comments, labels). \
+             Use `gh` CLI for all GitHub interactions (comments). \
              The repo is {owner}/{name} and the issue number is {issue_number}."
         )
     };
@@ -238,6 +238,8 @@ pub async fn session_start(
     let model_for_spawn = effective_model;
     let effort_for_spawn = effective_effort;
     let provider_kind = effective_provider;
+    let spec_repo_id = repo_id;
+    let spec_issue_number = issue_number;
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -259,6 +261,17 @@ pub async fn session_start(
                     save_session_cost(&app, session_db_id, cost);
                 }
                 update_status_via_app(&app, session_db_id, "completed", None);
+
+                // Check if the spec session was blocked (posted questions but no spec)
+                if let Ok(db) = app.state::<crate::AppState>().db.lock() {
+                    if let Ok(logs) = db::get_session_logs(&db, session_db_id) {
+                        let has_questions = logs.iter().any(|l| l.content.contains("## Questions"));
+                        let has_spec = logs.iter().any(|l| l.content.contains("## Spec"));
+                        if has_questions && !has_spec {
+                            let _ = db::set_issue_column(&db, spec_repo_id, spec_issue_number, "blocked");
+                        }
+                    }
+                }
 
                 let _ = app.emit(
                     "session-log",

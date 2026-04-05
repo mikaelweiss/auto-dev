@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Issue, ColumnId } from '$lib/types';
-	import { COLUMN_ORDER, COLUMN_CONFIG, getColumnForIssue } from '$lib/types';
-	import { issuesByColumn, refreshIssues } from '$lib/stores/issues';
+	import type { Issue, ColumnId, RepoConfig } from '$lib/types';
+	import { COLUMN_ORDER, COLUMN_CONFIG } from '$lib/types';
+	import { issuesByColumn, issueStates, refreshIssues } from '$lib/stores/issues';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
@@ -50,7 +50,6 @@
 	}
 
 	async function moveIssueToColumn(targetColumn: ColumnId, issue: Issue) {
-		const currentColumn = getColumnForIssue(issue);
 		const repo = $repos.find(
 			(r) => r.owner === issue.repo_owner && r.name === issue.repo_name
 		);
@@ -62,7 +61,7 @@
 				errorMessage = String(e);
 				setTimeout(() => { errorMessage = ''; }, 8000);
 			}
-			syncLabel(issue, currentColumn, targetColumn);
+			saveColumnState(repo, issue, targetColumn);
 			return;
 		}
 
@@ -83,31 +82,21 @@
 					console.error('Failed to close issue:', e);
 				}
 			}
-			syncLabel(issue, currentColumn, targetColumn);
+			saveColumnState(repo, issue, targetColumn);
 			await refreshIssues(issue.repo_owner, issue.repo_name);
 			return;
 		}
 
-		// For other column moves (no session involved), update labels and refresh
-		syncLabel(issue, currentColumn, targetColumn);
-		await refreshIssues(issue.repo_owner, issue.repo_name);
+		saveColumnState(repo, issue, targetColumn);
 	}
 
-	/** Best-effort label sync to GitHub — fire and forget. */
-	function syncLabel(issue: Issue, fromColumn: ColumnId, toColumn: ColumnId) {
-		const oldLabel = COLUMN_CONFIG[fromColumn].github_label;
-		const newLabel = COLUMN_CONFIG[toColumn].github_label;
-
-		if (oldLabel) {
-			backend
-				.removeLabel(issue.repo_owner, issue.repo_name, issue.number, oldLabel)
-				.catch(() => {});
-		}
-		if (newLabel) {
-			backend
-				.addLabel(issue.repo_owner, issue.repo_name, issue.number, newLabel)
-				.catch(() => {});
-		}
+	function saveColumnState(repo: RepoConfig | undefined, issue: Issue, columnId: ColumnId) {
+		if (!repo) return;
+		issueStates.update((current) => {
+			current.set(`${repo.id}:${issue.number}`, columnId);
+			return new Map(current);
+		});
+		backend.setIssueColumn(repo.id, issue.number, columnId).catch(() => {});
 	}
 </script>
 
