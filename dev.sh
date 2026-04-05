@@ -17,6 +17,9 @@ if [[ -n "$stale_pids" ]]; then
   sleep 1
 fi
 
+# Build the MCP binary for agent state advancement tools
+cargo build --manifest-path src-tauri/Cargo.toml --bin autodev-mcp
+
 # Full Tauri desktop app (Vite is started by tauri's beforeDevCommand)
 bun run dev &
 app_pid=$!
