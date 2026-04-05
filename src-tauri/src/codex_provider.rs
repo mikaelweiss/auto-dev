@@ -51,27 +51,39 @@ impl Provider for CodexProvider {
         cmd.args(["--model", &config.model]);
         cmd.arg("--json"); // JSONL output for structured parsing
 
-        // Map permission_mode to Codex execution mode
-        match config.permission_mode.as_str() {
-            "bypassPermissions" => {
-                cmd.arg("--full-auto");
-            }
-            _ => {
-                cmd.arg("--full-auto");
-            }
-        }
+        // Don't use --full-auto: it forces --sandbox workspace-write which
+        // blocks all network access (Seatbelt on macOS). The agent needs
+        // network to run `gh` CLI for GitHub API calls.
+        // Instead, set sandbox_mode and approval_policy in .codex/config.toml
+        // which codex exec reads at startup.
 
         // Working directory
         cmd.args(["-C", &config.worktree_path]);
 
-        // Write MCP config file for autodev state advancement
-        if let Some(ref mcp_binary) = config.mcp_binary_path {
+        // Write .codex/config.toml in the worktree with:
+        // - sandbox_mode = danger-full-access (allow network for gh CLI)
+        // - approval_policy = on-request (auto-approve safe commands)
+        // - shell_environment_policy: don't strip *TOKEN* env vars
+        // - MCP server config for state advancement tools
+        {
             let codex_dir = std::path::Path::new(&config.worktree_path).join(".codex");
             let _ = std::fs::create_dir_all(&codex_dir);
-            let config_content = format!(
-                "[mcp_servers.autodev]\ncommand = \"{}\"\n",
-                mcp_binary.replace('\\', "\\\\").replace('"', "\\\"")
+
+            let mut config_content = String::from(
+                "sandbox_mode = \"danger-full-access\"\n\
+                 approval_policy = \"on-request\"\n\
+                 \n\
+                 [shell_environment_policy]\n\
+                 ignore_default_excludes = true\n",
             );
+
+            if let Some(ref mcp_binary) = config.mcp_binary_path {
+                config_content.push_str(&format!(
+                    "\n[mcp_servers.autodev]\ncommand = \"{}\"\n",
+                    mcp_binary.replace('\\', "\\\\").replace('"', "\\\"")
+                ));
+            }
+
             let _ = std::fs::write(codex_dir.join("config.toml"), config_content);
         }
 

@@ -20,6 +20,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 
 [[bin]]
 name = "autodev-mcp"
