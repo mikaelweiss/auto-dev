@@ -7,5 +7,5 @@ bun install
 # Generate SvelteKit types
 bunx svelte-kit sync
 
-# Build Rust deps + generate Tauri schemas (non-interactive)
-cargo check --manifest-path src-tauri/Cargo.toml
+# Full Rust build so dev.sh starts fast (binary is already compiled)
+cargo build --manifest-path src-tauri/Cargo.toml
