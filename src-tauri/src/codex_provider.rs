@@ -162,7 +162,7 @@ impl CodexProvider {
                     "command_execution" => {
                         let command = item["command"].as_str().unwrap_or("command");
                         let exit_code = item["exit_code"].as_i64();
-                        let status = item["status"].as_str().unwrap_or("");
+                        let _status = item["status"].as_str().unwrap_or("");
 
                         // Truncate command for display
                         let cmd_display: String = command.chars().take(120).collect();

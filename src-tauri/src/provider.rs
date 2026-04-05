@@ -184,7 +184,6 @@ pub struct SessionConfig {
 
 /// The result of running a provider session.
 pub struct ProviderSessionResult {
-    pub cli_session_id: Option<String>,
     pub cost_usd: Option<f64>,
 }
 
@@ -314,7 +313,6 @@ pub async fn run_provider_session(
         use std::os::unix::process::ExitStatusExt;
         if status.signal() == Some(libc::SIGTERM) {
             return Ok(ProviderSessionResult {
-                cli_session_id,
                 cost_usd,
             });
         }
@@ -342,25 +340,11 @@ pub async fn run_provider_session(
     }
 
     Ok(ProviderSessionResult {
-        cli_session_id,
         cost_usd,
     })
 }
 
 // ── Provider Registry ───────────────────────────────────────────────────
-
-/// Get the appropriate provider for a model ID.
-pub fn get_provider(model_id: &str) -> Result<Box<dyn Provider>, String> {
-    let kind = provider_for_model(model_id).ok_or_else(|| {
-        format!("Unknown model: {model_id}")
-    })?;
-
-    match kind {
-        ProviderKind::Claude => Ok(Box::new(crate::claude_provider::ClaudeProvider)),
-        ProviderKind::Codex => Ok(Box::new(crate::codex_provider::CodexProvider)),
-        ProviderKind::Opencode => Ok(Box::new(crate::opencode_provider::OpencodeProvider)),
-    }
-}
 
 /// Get a provider by kind (for when you know the provider but not the model).
 pub fn get_provider_by_kind(kind: ProviderKind) -> Box<dyn Provider> {
