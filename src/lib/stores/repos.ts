@@ -8,6 +8,7 @@ export const selectedRepoId = writable<number | null>(null);
 export async function selectRepo(id: number) {
 	selectedRepoId.set(id);
 	await backend.setSelectedRepoId(id);
+	backend.loadIssueStates(id);
 }
 
 export async function removeRepo(id: number) {
@@ -26,7 +27,9 @@ export async function loadRepos(): Promise<RepoConfig[]> {
 	if (list.length > 0) {
 		const savedId = await backend.getSelectedRepoId();
 		const valid = savedId != null && list.some((r) => r.id === savedId);
-		selectedRepoId.set(valid ? savedId : list[0].id);
+		const repoId = valid ? savedId! : list[0].id;
+		selectedRepoId.set(repoId);
+		backend.loadIssueStates(repoId);
 	}
 	return list;
 }

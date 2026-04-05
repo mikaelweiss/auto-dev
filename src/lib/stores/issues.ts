@@ -1,14 +1,17 @@
 import { writable, derived } from 'svelte/store';
 import type { Issue, ColumnId } from '$lib/types';
-import { getColumnForIssue, getColumnForSession, COLUMN_ORDER } from '$lib/types';
+import { getColumnForSession, COLUMN_ORDER } from '$lib/types';
 import { selectedRepoId, repos } from './repos';
 import { sessionByIssue } from './sessions';
 
 export const issues = writable<Issue[]>([]);
 
+/** Local column assignments keyed by "repoId:issueNumber" */
+export const issueStates = writable<Map<string, ColumnId>>(new Map());
+
 export const issuesByColumn = derived(
-	[issues, selectedRepoId, repos, sessionByIssue],
-	([$issues, $selectedRepoId, $repos, $sessionByIssue]) => {
+	[issues, selectedRepoId, repos, sessionByIssue, issueStates],
+	([$issues, $selectedRepoId, $repos, $sessionByIssue, $issueStates]) => {
 		const grouped: Record<ColumnId, Issue[]> = {
 			backlog: [],
 			planning: [],
@@ -42,8 +45,8 @@ export const issuesByColumn = derived(
 				const col = getColumnForSession(session);
 				grouped[col].push(issue);
 			} else {
-				// No session — fall back to GitHub labels
-				const col = getColumnForIssue(issue);
+				// Fall back to local DB state, default to backlog
+				const col = $issueStates.get(sessionKey) ?? 'backlog';
 				grouped[col].push(issue);
 			}
 		}
