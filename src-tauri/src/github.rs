@@ -224,9 +224,6 @@ pub async fn github_add_repo(
         db::set_setting(&db, &format!("repo_{repo_id}_path"), repo_dir.to_str().ok_or("Non-UTF-8 repo path")?)?;
     }
 
-    // Ensure autodev labels exist on the repo
-    ensure_labels(client, &token, &owner, &name).await?;
-
     Ok(RepoConfig { id: repo_id, ..repo })
 }
 
@@ -304,9 +301,6 @@ pub async fn github_add_local_repo(
         let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
         db::set_setting(&db, &format!("repo_{repo_id}_path"), &path)?;
     }
-
-    // Ensure autodev labels exist on the repo
-    ensure_labels(client, &token, &owner, &name).await?;
 
     Ok(RepoConfig { id: repo_id, ..repo })
 }
@@ -451,13 +445,15 @@ pub async fn github_fetch_issues(
     state: tauri::State<'_, AppState>,
     owner: String,
     name: String,
+    page: Option<u32>,
 ) -> Result<Vec<Issue>, String> {
     let token = get_token(&state)?;
     let client = &state.http_client;
+    let page = page.unwrap_or(1);
 
     let resp = client
         .get(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated"
+            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated&page={page}"
         ))
         .headers(github_headers(&token)?)
         .send()
@@ -473,7 +469,6 @@ pub async fn github_fetch_issues(
         .await
         .map_err(|e| format!("Failed to parse issues: {e}"))?;
 
-    // Annotate with repo info
     for issue in &mut issues {
         issue.repo_owner = owner.clone();
         issue.repo_name = name.clone();
@@ -526,66 +521,6 @@ pub async fn github_create_issue(
     issue.repo_name = name;
 
     Ok(issue)
-}
-
-#[tauri::command]
-pub async fn github_add_label(
-    state: tauri::State<'_, AppState>,
-    owner: String,
-    name: String,
-    issue_number: i64,
-    label: String,
-) -> Result<(), String> {
-    let token = get_token(&state)?;
-    let client = &state.http_client;
-
-    let resp = client
-        .post(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels"
-        ))
-        .headers(github_headers(&token)?)
-        .json(&json!({ "labels": [label] }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to add label: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API error adding label: {}", resp.status()));
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn github_remove_label(
-    state: tauri::State<'_, AppState>,
-    owner: String,
-    name: String,
-    issue_number: i64,
-    label: String,
-) -> Result<(), String> {
-    let token = get_token(&state)?;
-    let client = &state.http_client;
-
-    let encoded_label = urlencoding_label(&label);
-    let resp = client
-        .delete(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels/{encoded_label}"
-        ))
-        .headers(github_headers(&token)?)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to remove label: {e}"))?;
-
-    // Ignore 404 — label might not be present
-    if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-        return Err(format!(
-            "GitHub API error removing label: {}",
-            resp.status()
-        ));
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -778,54 +713,8 @@ async fn fetch_current_user(client: &Client, token: &str) -> Result<GitHubUser, 
     Ok(user)
 }
 
-async fn ensure_labels(
-    client: &Client,
-    token: &str,
-    owner: &str,
-    name: &str,
-) -> Result<(), String> {
-    let labels = [
-        ("autodev:planning", "0E8A16"),
-        ("autodev:in-progress", "1D76DB"),
-        ("autodev:blocked", "E4E669"),
-        ("autodev:review", "5319E7"),
-    ];
-
-    for (label_name, color) in &labels {
-        let resp = client
-            .post(format!("{GITHUB_API}/repos/{owner}/{name}/labels"))
-            .headers(github_headers(token)?)
-            .json(&json!({
-                "name": label_name,
-                "color": color,
-            }))
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) => {
-                // 422 means label already exists — that's fine
-                if !r.status().is_success()
-                    && r.status() != reqwest::StatusCode::UNPROCESSABLE_ENTITY
-                {
-                    eprintln!("Warning: Failed to create label {label_name}: {}", r.status());
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to create label {label_name}: {e}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Percent-encode a label for use in URL paths (colons are fine per GitHub API)
-fn urlencoding_label(label: &str) -> String {
-    label.replace(' ', "%20")
-}
-
-/// Fetch issues for a repo (non-command helper used by polling)
+/// Fetch issues for a repo (non-command helper used by polling).
+/// Only fetches the first page (100 most recently updated) to keep polls fast.
 pub async fn fetch_issues_for_repo(
     client: &Client,
     token: &str,

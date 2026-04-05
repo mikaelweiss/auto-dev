@@ -12,9 +12,10 @@ import type {
 	AgentPrompt,
 	SessionStage,
 	ModelInfo,
-	ProviderKind
+	ProviderKind,
+	ColumnId
 } from '$lib/types';
-import { issues } from './issues';
+import { issues, issueStates } from './issues';
 import { sessions, sessionLogs } from './sessions';
 
 // Initialize: set up event listeners for Rust -> frontend events
@@ -116,6 +117,20 @@ export async function initBackend() {
 	});
 }
 
+export async function loadIssueStates(repoId: number) {
+	try {
+		const states = await getIssueStates(repoId);
+		issueStates.update((current) => {
+			for (const [issueNumber, columnId] of states) {
+				current.set(`${repoId}:${issueNumber}`, columnId as ColumnId);
+			}
+			return new Map(current);
+		});
+	} catch (_) {
+		// Failed to load issue states
+	}
+}
+
 // Auth
 export async function authFromCli(): Promise<GitHubUser> {
 	return invoke('github_auth_from_cli');
@@ -159,8 +174,8 @@ export async function listCollaborators(owner: string, name: string): Promise<Gi
 }
 
 // Issues
-export async function fetchIssues(owner: string, name: string): Promise<Issue[]> {
-	return invoke('github_fetch_issues', { owner, name });
+export async function fetchIssues(owner: string, name: string, page: number = 1): Promise<Issue[]> {
+	return invoke('github_fetch_issues', { owner, name, page });
 }
 
 export async function createIssue(
@@ -230,23 +245,17 @@ export async function stopSession(sessionId: string): Promise<void> {
 	return invoke('session_stop', { sessionId });
 }
 
-// Labels
-export async function addLabel(
-	owner: string,
-	name: string,
-	issueNumber: number,
-	label: string
-): Promise<void> {
-	return invoke('github_add_label', { owner, name, issueNumber, label });
+// Issue State
+export async function getIssueStates(repoId: number): Promise<[number, string][]> {
+	return invoke('get_issue_states', { repoId });
 }
 
-export async function removeLabel(
-	owner: string,
-	name: string,
+export async function setIssueColumn(
+	repoId: number,
 	issueNumber: number,
-	label: string
+	columnId: string
 ): Promise<void> {
-	return invoke('github_remove_label', { owner, name, issueNumber, label });
+	return invoke('set_issue_column', { repoId, issueNumber, columnId });
 }
 
 export async function closeIssue(
@@ -267,7 +276,7 @@ export async function mergePR(
 }
 
 export async function runTest(sessionId: string): Promise<void> {
-	return invoke('issue_run_test', { sessionId });
+	return invoke('session_run_test', { sessionId });
 }
 
 // Settings

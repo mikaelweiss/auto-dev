@@ -37,8 +37,9 @@ There are no tests yet.
 ### Rust Backend (`src-tauri/src/`)
 
 - `lib.rs` — App entry point. Registers `AppState` (SQLite connection + HTTP client), starts polling, registers all Tauri commands.
-- `db.rs` — All SQLite operations. Database lives at `~/.autodev/autodev.db`. Tables: `repos`, `sessions`, `auth`, `settings`, `agent_prompts`, `session_logs`.
-- `github.rs` — GitHub REST API calls (auth via `gh` CLI token, issues, labels, PRs, merge). Also has `ensure_labels()` which creates `autodev:*` labels on repo add.
+- `db.rs` — All SQLite operations. Database lives at `~/.autodev/autodev.db`. Tables: `repos`, `sessions`, `auth`, `settings`, `agent_prompts`, `session_logs`, `issue_state`.
+- `issue_state.rs` — Tauri commands for reading/writing per-issue column state (`get_issue_states`, `set_issue_column`).
+- `github.rs` — GitHub REST API calls (auth via `gh` CLI token, issues, PRs, merge).
 - `sessions.rs` — Core session lifecycle. Spawns `claude` CLI as a subprocess with `--output-format stream-json`, streams stdout into session logs and Tauri events. Three entry points: `session_start` (spec), `session_start_implement`, `session_start_review`. Permission modes: `plan` for spec, `bypassPermissions` for implement/review.
 - `worktrees.rs` — Git worktree creation/removal, setup script execution, diff generation, branch pushing.
 - `polling.rs` — Background task that polls GitHub issues on an interval and emits `issues-updated` events.
@@ -46,7 +47,7 @@ There are no tests yet.
 
 ### Svelte Frontend (`src/`)
 
-- `src/lib/types/index.ts` — TypeScript types mirroring the Rust types. Also defines `COLUMN_CONFIG`, `COLUMN_ORDER`, and the column-resolution functions `getColumnForIssue()` / `getColumnForSession()`.
+- `src/lib/types/index.ts` — TypeScript types mirroring the Rust types. Also defines `COLUMN_CONFIG`, `COLUMN_ORDER`, and `getColumnForSession()`.
 - `src/lib/stores/backend.ts` — Typed wrapper around all `invoke()` calls. Single import point for all backend communication.
 - `src/lib/stores/` — Svelte stores for reactive state: `issues.ts` (with derived `issuesByColumn`), `sessions.ts` (with derived `sessionByIssue`), `repos.ts`, `auth.ts`, `settings.ts`, `ui.ts`.
 - `src/lib/components/` — UI components: `KanbanBoard`, `KanbanColumn`, `IssueCard`, `CardDetail` (modal), `RepoSelector`, `SettingsDialog`, `NewIssueDialog`, `AddRepoDialog`, `RemoveRepoDialog`, `AgentLog`.
@@ -54,10 +55,10 @@ There are no tests yet.
 
 ### Key Data Flow
 
-1. GitHub labels (`autodev:planning`, `autodev:in-progress`, `autodev:blocked`, `autodev:review`) are the source of truth for board position.
-2. Local session state overrides label-based positioning while a session is active (`sessionByIssue` derived store).
+1. Board column position is persisted locally in the `issue_state` SQLite table. Issues default to `backlog` when no state exists.
+2. Local session state overrides persisted column state while a session is active (`sessionByIssue` derived store).
 3. Polling emits `issues-updated` events; session lifecycle emits `session-status` and `session-log` events. Frontend stores react to both.
-4. Issues are never stored locally — they're fetched from GitHub on every poll. Only sessions, auth, settings, and prompts are persisted in SQLite.
+4. Issues themselves are never stored locally — they're fetched from GitHub on every poll. Sessions, auth, settings, prompts, and issue column state are persisted in SQLite.
 
 ## Tech Stack
 
