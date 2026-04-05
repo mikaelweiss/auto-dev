@@ -62,4 +62,4 @@ You are running inside a git worktree for this issue. The diff against the base 
 
 ## State Advancement
 You have an MCP tool available:
-- `advance_to_blocked(reason)`: Call this if the review reveals issues that need a human decision you cannot make on your own.
+- `advance_to_blocked()`: Call this if the review reveals issues that need a human decision you cannot make on your own.

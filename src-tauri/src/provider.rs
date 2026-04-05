@@ -12,7 +12,7 @@ use crate::types::*;
 /// A state transition signal from the AI via MCP tools.
 #[derive(Debug, Clone)]
 pub enum StateSignal {
-    AdvanceToBlocked { reason: String },
+    AdvanceToBlocked,
     AdvanceToInProgress,
     AdvanceToReview,
 }
@@ -57,7 +57,7 @@ pub fn detect_signal_from_json(json: &Value) -> Option<StateSignal> {
     None
 }
 
-fn parse_tool_name_and_input(name: Option<&str>, input: Option<&Value>) -> Option<StateSignal> {
+fn parse_tool_name_and_input(name: Option<&str>, _input: Option<&Value>) -> Option<StateSignal> {
     let name = name?;
     // Strip mcp__autodev__ prefix if present
     let tool = name
@@ -65,14 +65,7 @@ fn parse_tool_name_and_input(name: Option<&str>, input: Option<&Value>) -> Optio
         .unwrap_or(name);
 
     match tool {
-        "advance_to_blocked" => {
-            let reason = input
-                .and_then(|i| i.get("reason"))
-                .and_then(|r| r.as_str())
-                .unwrap_or("Blocked — awaiting human input")
-                .to_string();
-            Some(StateSignal::AdvanceToBlocked { reason })
-        }
+        "advance_to_blocked" => Some(StateSignal::AdvanceToBlocked),
         "advance_to_in_progress" => Some(StateSignal::AdvanceToInProgress),
         "advance_to_review" => Some(StateSignal::AdvanceToReview),
         _ => None,

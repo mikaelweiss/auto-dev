@@ -71,21 +71,6 @@ export async function initBackend() {
 		});
 	});
 
-	await listen<{ session_id: string; question: string }>('session-blocked', (event) => {
-		sessionLogs.update((current) => {
-			const logs = current.get(event.payload.session_id) ?? [];
-			logs.push({
-				id: crypto.randomUUID(),
-				session_id: event.payload.session_id,
-				timestamp: new Date().toISOString(),
-				event_type: 'message',
-				content: event.payload.question
-			});
-			current.set(event.payload.session_id, logs);
-			return new Map(current);
-		});
-	});
-
 	await listen<{ session_id: string; error: string }>('session-error', (event) => {
 		sessionLogs.update((current) => {
 			const logs = current.get(event.payload.session_id) ?? [];
