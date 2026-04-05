@@ -307,6 +307,14 @@ pub async fn run_provider_session(
     let binary_path = provider.find_binary()?;
     let mut cmd = provider.build_command(&binary_path, &config);
 
+    // Get a fresh GitHub token from `gh auth token` so `gh` CLI works in
+    // the subprocess. We do this live rather than using a stored token
+    // because tokens can expire — a stale GH_TOKEN would override gh's
+    // own (possibly refreshed) auth.
+    if let Some(token) = get_fresh_gh_token().await {
+        cmd.env("GH_TOKEN", token);
+    }
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // Create a new process group so we can kill all children together
@@ -465,6 +473,21 @@ fn insert_log_via_app(app_handle: &tauri::AppHandle, session_db_id: i64, event_t
     let state = app_handle.state::<crate::AppState>();
     let Ok(db) = state.db.lock() else { return };
     let _ = crate::db::insert_session_log(&db, session_db_id, event_type, content);
+}
+
+/// Get a fresh GitHub token by running `gh auth token`.
+/// Returns None if gh isn't installed or not authenticated.
+async fn get_fresh_gh_token() -> Option<String> {
+    let output = tokio::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() { None } else { Some(token) }
 }
 
 /// Find the autodev-mcp binary, looking next to the current executable.
