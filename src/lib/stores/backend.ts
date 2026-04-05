@@ -265,7 +265,7 @@ export async function mergePR(
 }
 
 export async function runTest(sessionId: string): Promise<void> {
-	return invoke('issue_run_test', { sessionId });
+	return invoke('session_run_test', { sessionId });
 }
 
 // Settings
