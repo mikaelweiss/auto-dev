@@ -73,10 +73,17 @@ impl Provider for OpencodeProvider {
         // Resume a previous session
         if let Some(ref resume_id) = config.resume_session_id {
             cmd.args(["--session", resume_id]);
+            cmd.arg(&config.user_prompt);
+        } else {
+            // OpenCode has no --system-prompt flag. The only prompt input is the
+            // positional message arg. Combine system + user into one.
+            let combined = if config.system_prompt.is_empty() {
+                config.user_prompt.clone()
+            } else {
+                format!("{}\n\n---\n\n{}", config.system_prompt, config.user_prompt)
+            };
+            cmd.arg(&combined);
         }
-
-        // Pass the user prompt as positional message
-        cmd.arg(&config.user_prompt);
 
         cmd
     }

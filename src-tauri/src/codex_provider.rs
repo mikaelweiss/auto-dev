@@ -87,11 +87,6 @@ impl Provider for CodexProvider {
             let _ = std::fs::write(codex_dir.join("config.toml"), config_content);
         }
 
-        // System prompt via config override
-        if config.resume_session_id.is_none() && !config.system_prompt.is_empty() {
-            cmd.args(["-c", &format!("instructions=\"{}\"", config.system_prompt.replace('"', "\\\""))]);
-        }
-
         // Resume a previous session
         if let Some(ref resume_id) = config.resume_session_id {
             // Use `exec resume` subcommand
@@ -99,9 +94,17 @@ impl Provider for CodexProvider {
             // The resume_id isn't directly usable the same way as Claude's --resume,
             // but we still attempt to continue via the last session
             let _ = resume_id;
+            cmd.arg(&config.user_prompt);
+        } else {
+            // Codex has no --system-prompt flag. The only prompt input is the
+            // positional [PROMPT] arg. Combine system + user into one.
+            let combined = if config.system_prompt.is_empty() {
+                config.user_prompt.clone()
+            } else {
+                format!("{}\n\n---\n\n{}", config.system_prompt, config.user_prompt)
+            };
+            cmd.arg(&combined);
         }
-
-        cmd.arg(&config.user_prompt);
 
         cmd
     }
