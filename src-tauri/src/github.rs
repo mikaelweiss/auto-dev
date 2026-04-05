@@ -7,21 +7,23 @@ use crate::AppState;
 
 const GITHUB_API: &str = "https://api.github.com";
 
-fn github_headers(token: &str) -> reqwest::header::HeaderMap {
+fn github_headers(token: &str) -> Result<reqwest::header::HeaderMap, String> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        format!("Bearer {token}").parse().unwrap(),
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| "Auth token contains invalid characters".to_string())?,
     );
     headers.insert(
         reqwest::header::ACCEPT,
-        "application/vnd.github+json".parse().unwrap(),
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
     );
     headers.insert(
         reqwest::header::USER_AGENT,
-        "AutoDev".parse().unwrap(),
+        reqwest::header::HeaderValue::from_static("AutoDev"),
     );
-    headers
+    Ok(headers)
 }
 
 // ── Auth Commands ───────────────────────────────────────────────────────
@@ -117,7 +119,7 @@ pub async fn github_list_user_repos(
             .get(format!(
                 "{GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&page={page}"
             ))
-            .headers(github_headers(&token))
+            .headers(github_headers(&token)?)
             .send()
             .await
             .map_err(|e| format!("Failed to fetch repos: {e}"))?;
@@ -155,7 +157,7 @@ pub async fn github_add_repo(
     // Fetch repo info from GitHub
     let resp = client
         .get(format!("{GITHUB_API}/repos/{owner}/{name}"))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch repo: {e}"))?;
@@ -203,7 +205,7 @@ pub async fn github_add_repo(
             .map_err(|e| format!("Failed to create repo directory: {e}"))?;
 
         let clone_output = tokio::process::Command::new("gh")
-            .args(["repo", "clone", &format!("{owner}/{name}"), repo_dir.to_str().unwrap()])
+            .args(["repo", "clone", &format!("{owner}/{name}"), repo_dir.to_str().ok_or("Non-UTF-8 repo path")?])
             .output()
             .await
             .map_err(|e| format!("Failed to clone repo: {e}"))?;
@@ -219,7 +221,7 @@ pub async fn github_add_repo(
     // Store the local path
     {
         let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
-        db::set_setting(&db, &format!("repo_{repo_id}_path"), repo_dir.to_str().unwrap())?;
+        db::set_setting(&db, &format!("repo_{repo_id}_path"), repo_dir.to_str().ok_or("Non-UTF-8 repo path")?)?;
     }
 
     // Ensure autodev labels exist on the repo
@@ -261,7 +263,7 @@ pub async fn github_add_local_repo(
 
     let resp = client
         .get(format!("{GITHUB_API}/repos/{owner}/{name}"))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch repo from GitHub: {e}"))?;
@@ -425,7 +427,7 @@ pub async fn github_list_collaborators(
         .get(format!(
             "{GITHUB_API}/repos/{owner}/{name}/collaborators?per_page=100"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch collaborators: {e}"))?;
@@ -457,7 +459,7 @@ pub async fn github_fetch_issues(
         .get(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch issues: {e}"))?;
@@ -503,7 +505,7 @@ pub async fn github_create_issue(
 
     let resp = client
         .post(format!("{GITHUB_API}/repos/{owner}/{name}/issues"))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&payload)
         .send()
         .await
@@ -541,7 +543,7 @@ pub async fn github_add_label(
         .post(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&json!({ "labels": [label] }))
         .send()
         .await
@@ -570,7 +572,7 @@ pub async fn github_remove_label(
         .delete(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels/{encoded_label}"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to remove label: {e}"))?;
@@ -601,7 +603,7 @@ pub async fn github_post_comment(
         .post(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/comments"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&json!({ "body": body }))
         .send()
         .await
@@ -632,7 +634,7 @@ pub async fn github_create_pr(
 
     let resp = client
         .post(format!("{GITHUB_API}/repos/{owner}/{name}/pulls"))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&json!({
             "title": title,
             "body": body,
@@ -671,7 +673,7 @@ pub async fn github_squash_merge(
         .put(format!(
             "{GITHUB_API}/repos/{owner}/{name}/pulls/{pull_number}/merge"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&json!({ "merge_method": "squash" }))
         .send()
         .await
@@ -700,7 +702,7 @@ pub async fn github_close_issue(
         .patch(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}"
         ))
-        .headers(github_headers(&token))
+        .headers(github_headers(&token)?)
         .json(&json!({ "state": "closed" }))
         .send()
         .await
@@ -709,6 +711,37 @@ pub async fn github_close_issue(
     if !resp.status().is_success() {
         return Err(format!(
             "GitHub API error closing issue: {}",
+            resp.status()
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn github_update_issue_body(
+    state: tauri::State<'_, AppState>,
+    owner: String,
+    name: String,
+    issue_number: i64,
+    body: String,
+) -> Result<(), String> {
+    let token = get_token(&state)?;
+    let client = &state.http_client;
+
+    let resp = client
+        .patch(format!(
+            "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}"
+        ))
+        .headers(github_headers(&token)?)
+        .json(&json!({ "body": body }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to update issue: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub API error updating issue: {}",
             resp.status()
         ));
     }
@@ -728,7 +761,7 @@ fn get_token(state: &tauri::State<'_, AppState>) -> Result<String, String> {
 async fn fetch_current_user(client: &Client, token: &str) -> Result<GitHubUser, String> {
     let resp = client
         .get(format!("{GITHUB_API}/user"))
-        .headers(github_headers(token))
+        .headers(github_headers(token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch user: {e}"))?;
@@ -761,7 +794,7 @@ async fn ensure_labels(
     for (label_name, color) in &labels {
         let resp = client
             .post(format!("{GITHUB_API}/repos/{owner}/{name}/labels"))
-            .headers(github_headers(token))
+            .headers(github_headers(token)?)
             .json(&json!({
                 "name": label_name,
                 "color": color,
@@ -803,7 +836,7 @@ pub async fn fetch_issues_for_repo(
         .get(format!(
             "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated"
         ))
-        .headers(github_headers(token))
+        .headers(github_headers(token)?)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch issues: {e}"))?;

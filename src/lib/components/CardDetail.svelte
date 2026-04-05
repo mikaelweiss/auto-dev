@@ -22,6 +22,7 @@
 	let showDetails = $state(false);
 	let editingBody = $state(false);
 	let bodyDraft = $state('');
+	let savingBody = $state(false);
 	let confirmHideSessionId: string | null = $state(null);
 	let showHistory = $state(false);
 	let hiddenSessions: Session[] = $state([]);
@@ -298,6 +299,21 @@
 		});
 	}
 
+	async function handleSaveBody() {
+		if (!issue || savingBody) return;
+		savingBody = true;
+		try {
+			await backend.updateIssueBody(issue.repo_owner, issue.repo_name, issue.number, bodyDraft);
+			issue.body = bodyDraft;
+			editingBody = false;
+		} catch (e) {
+			// Show inline error via the existing error banner pattern
+			console.error('Failed to save issue body:', e);
+		} finally {
+			savingBody = false;
+		}
+	}
+
 	function openInBrowser() {
 		if (issue) {
 			window.open(issue.html_url, '_blank');
@@ -379,21 +395,38 @@
 					<div class="space-y-1.5">
 						<div class="flex items-center justify-between">
 							<span class="text-xs text-muted-foreground">Description</span>
-							<button
-								class="text-xs text-muted-foreground hover:text-foreground transition-colors"
-								onclick={() => {
-									editingBody = !editingBody;
-									bodyDraft = issue.body;
-								}}
-							>
-								{editingBody ? 'Cancel' : 'Edit'}
-							</button>
+							{#if !editingBody}
+								<button
+									class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+									onclick={() => {
+										editingBody = true;
+										bodyDraft = issue.body;
+									}}
+								>
+									Edit
+								</button>
+							{/if}
 						</div>
 						{#if editingBody}
 							<textarea
 								class="w-full h-32 bg-muted rounded-lg p-3 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-none"
 								bind:value={bodyDraft}
 							></textarea>
+							<div class="flex justify-end gap-2 mt-1.5">
+								<button
+									class="px-2 py-1 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+									onclick={() => { editingBody = false; bodyDraft = issue.body; }}
+								>
+									Cancel
+								</button>
+								<button
+									class="px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+									onclick={handleSaveBody}
+									disabled={savingBody || bodyDraft === issue.body}
+								>
+									{savingBody ? 'Saving...' : 'Save'}
+								</button>
+							</div>
 						{:else}
 							<div
 								class="text-sm text-foreground/90 whitespace-pre-wrap bg-muted/40 rounded-lg p-3 max-h-[6rem] overflow-y-auto"
@@ -530,6 +563,15 @@
 						</div>
 					{/if}
 				</div>
+
+			<!-- Copied feedback -->
+			{#if copied}
+				<div class="shrink-0 px-4 py-1.5">
+					<div class="text-xs text-green-400 bg-green-500/10 rounded px-2 py-1 text-center">
+						Copied to clipboard
+					</div>
+				</div>
+			{/if}
 
 			<!-- Error banner -->
 			{#if activeSession?.error_message}

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri/src-tauri/tauri.conf.json",
+  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri.conf.json",
   "productName": "AutoDev",
   "version": "0.1.0",
   "identifier": "com.autodev.app",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://avatars.githubusercontent.com"
     }
   },
   "plugins": {}

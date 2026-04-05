@@ -31,7 +31,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Initialize database
-            let conn = db::open_and_init().expect("Failed to initialize database");
+            let conn = db::open_and_init()
+                .map_err(|e| format!("Failed to initialize database: {e}"))?;
 
             let state = AppState {
                 db: Mutex::new(conn),
@@ -41,13 +42,13 @@ pub fn run() {
 
             // Clean up any sessions left running from a previous app launch
             {
-                let db = state.db.lock().expect("DB lock failed during setup");
+                let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
                 let _ = db::fail_orphaned_sessions(&db);
             }
 
             // Check auth and start polling in background
             let has_auth = {
-                let db = state.db.lock().expect("DB lock failed during setup");
+                let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
                 db::get_auth_token(&db)
                     .ok()
                     .flatten()
@@ -55,7 +56,7 @@ pub fn run() {
             };
 
             let interval = {
-                let db = state.db.lock().expect("DB lock failed during setup");
+                let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
                 db::get_app_settings(&db)
                     .map(|s| s.poll_interval_seconds as u64)
                     .unwrap_or(15)
@@ -93,6 +94,7 @@ pub fn run() {
             github::github_create_pr,
             github::github_squash_merge,
             github::github_close_issue,
+            github::github_update_issue_body,
             // Sessions
             sessions::session_list,
             sessions::session_start,
