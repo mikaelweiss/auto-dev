@@ -1,4 +1,4 @@
-use crate::provider::{ParsedLine, Provider, ProviderKind, SessionConfig};
+use crate::provider::{self, ParsedLine, Provider, ProviderKind, SessionConfig};
 use crate::sdk_types::CliMessage;
 
 /// Claude Code CLI provider.
@@ -56,6 +56,23 @@ impl Provider for ClaudeProvider {
             &config.effort,
         ]);
 
+        // Inject MCP config for autodev state advancement tools
+        if let Some(ref mcp_binary) = config.mcp_binary_path {
+            let mcp_config = serde_json::json!({
+                "mcpServers": {
+                    "autodev": {
+                        "command": mcp_binary,
+                        "args": []
+                    }
+                }
+            });
+            cmd.arg("--mcp-config").arg(mcp_config.to_string());
+            cmd.args([
+                "--allowed-tools",
+                "mcp__autodev__advance_to_blocked,mcp__autodev__advance_to_in_progress,mcp__autodev__advance_to_review",
+            ]);
+        }
+
         // Resume a previous conversation if we have a CLI session ID
         if let Some(ref resume_id) = config.resume_session_id {
             cmd.arg("--resume").arg(resume_id);
@@ -81,12 +98,18 @@ impl Provider for ClaudeProvider {
             None
         };
 
+        // Detect state advancement signals from MCP tool calls
+        let signal = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|json| provider::detect_signal_from_json(&json));
+
         let entries = msg.to_log_entries();
 
         ParsedLine {
             entries,
             session_id,
             cost_usd,
+            signal,
         }
     }
 }

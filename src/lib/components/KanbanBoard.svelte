@@ -65,6 +65,17 @@
 			return;
 		}
 
+		if (targetColumn === 'in_progress' && repo) {
+			try {
+				await backend.startImplementSession(repo.id, issue.number);
+			} catch (e) {
+				errorMessage = String(e);
+				setTimeout(() => { errorMessage = ''; }, 8000);
+			}
+			saveColumnState(repo, issue, targetColumn);
+			return;
+		}
+
 		if (targetColumn === 'done') {
 			if (issue.pull_request) {
 				const prNumber = parseInt(issue.pull_request.url.split('/').pop() ?? '0', 10);

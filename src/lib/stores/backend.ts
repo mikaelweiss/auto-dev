@@ -100,6 +100,19 @@ export async function initBackend() {
 		});
 	});
 
+	await listen<{ repo_id: number; issue_number: number; column_id: string }>(
+		'issue-column-changed',
+		(event) => {
+			issueStates.update((current) => {
+				current.set(
+					`${event.payload.repo_id}:${event.payload.issue_number}`,
+					event.payload.column_id as ColumnId
+				);
+				return new Map(current);
+			});
+		}
+	);
+
 	await listen<{ session_id: string; line: string }>('test-output', (event) => {
 		sessionLogs.update((current) => {
 			const logs = current.get(event.payload.session_id) ?? [];

@@ -53,11 +53,19 @@ export const issuesByColumn = derived(
 				continue;
 			}
 
-			// Check for a local session — session state is king
 			const sessionKey = `${repo.id}:${issue.number}`;
 			const session = $sessionByIssue.get(sessionKey);
 
-			if (session) {
+			// Only derive column from session if the session is actively running.
+			// For completed/failed sessions, use the DB state (which gets updated by
+			// state advancement signals from the AI).
+			const isActive =
+				session &&
+				(session.status === 'running' ||
+					session.status === 'initializing' ||
+					session.status === 'setup');
+
+			if (isActive) {
 				const col = getColumnForSession(session);
 				grouped[col].push(issue);
 			} else {

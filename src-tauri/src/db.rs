@@ -299,26 +299,75 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         eprintln!("[DB] sessions provider/model migration complete");
     }
 
+    // Migration: refresh default prompts to include MCP state advancement tools
+    // We detect this by checking if the spec prompt already mentions advance_to_blocked.
+    let needs_prompt_refresh: bool = conn
+        .query_row(
+            "SELECT prompt_text FROM agent_prompts WHERE stage = 'spec' AND is_default = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|text| !text.contains("advance_to_blocked"))
+        .unwrap_or(false);
+
+    if needs_prompt_refresh {
+        eprintln!("[DB] Refreshing default prompts with MCP state advancement tools");
+        // Delete old default prompts so seed_default_prompts re-inserts them
+        conn.execute_batch(
+            "DELETE FROM agent_prompts WHERE is_default = 1;",
+        )
+        .map_err(|e| format!("Failed to refresh default prompts: {e}"))?;
+        eprintln!("[DB] Default prompts refresh complete");
+    }
+
     Ok(())
 }
 
 fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
+    let state_tools_spec = "\n\n\
+        ## State Advancement (REQUIRED)\n\
+        You have MCP tools to signal state transitions to AutoDev. You MUST call exactly one before finishing:\n\n\
+        - `advance_to_blocked(reason)`: Call this when you have blocking questions that prevent you from writing the spec. \
+        Provide the specific questions as the reason. AutoDev will notify the user.\n\
+        - `advance_to_in_progress()`: Call this AFTER you have written and posted the spec comment. \
+        This signals that spec is complete and implementation should begin automatically.\n\n\
+        IMPORTANT: Always call one of these tools as your final action. \
+        If you posted questions → call `advance_to_blocked`. If you posted a spec → call `advance_to_in_progress`.";
+
+    let state_tools_implement = "\n\n\
+        ## State Advancement (REQUIRED)\n\
+        You have MCP tools to signal state transitions to AutoDev. You MUST call exactly one before finishing:\n\n\
+        - `advance_to_blocked(reason)`: Call this if you encounter a problem that requires human input to resolve. \
+        Provide specifics about what you need.\n\
+        - `advance_to_review(reason)`: Call this AFTER you have committed all changes and the implementation is complete. \
+        This signals that the code is ready for human review.\n\n\
+        IMPORTANT: Always call one of these tools as your final action. \
+        If you need help → call `advance_to_blocked`. If implementation is done → call `advance_to_review`.";
+
+    let state_tools_review = "\n\n\
+        ## State Advancement\n\
+        You have an MCP tool available:\n\
+        - `advance_to_blocked(reason)`: Call this if the review reveals issues that need a human decision \
+        you cannot make on your own.";
+
     let defaults: &[(&str, &str)] = &[
         (
             "spec",
-            "You are an AI developer analyzing a GitHub issue to produce a specification.\n\
+            &format!("You are an AI developer analyzing a GitHub issue to produce a specification.\n\
              You have access to the `gh` CLI for interacting with GitHub.\n\n\
              ## Process\n\
              1. Check for an existing spec by reading the issue's comments:\n\
-             \x20  `gh api repos/{owner}/{repo}/issues/{number}/comments --jq '.[].body'`\n\
+             \x20  `gh api repos/{{owner}}/{{repo}}/issues/{{number}}/comments --jq '.[].body'`\n\
              \x20  Look for a comment that starts with \"## Spec\" or contains a specification.\n\
-             2. **If an existing spec is found**: Present it to the user and ask if there's anything they'd like to update. If they confirm it's good, you're done — tell the user the spec is ready.\n\
+             2. **If an existing spec is found**: Present it to the user and ask if there's anything they'd like to update. If they confirm it's good, you're done — call `advance_to_in_progress()`.\n\
              3. **If no spec exists**: Read the issue thoroughly and explore the codebase to understand the architecture, conventions, and relevant code paths.\n\
              4. If you have blocking questions that prevent you from writing the spec:\n\
-             \x20  a. Post a comment on the issue with your questions: `gh issue comment {number} -R {owner}/{repo} --body \"## Questions\\n\\n...\"`\n\
-             \x20  b. Stop and tell the user you've posted questions on the issue.\n\
+             \x20  a. Post a comment on the issue with your questions: `gh issue comment {{number}} -R {{owner}}/{{repo}} --body \"## Questions\\n\\n...\"`\n\
+             \x20  b. Call `advance_to_blocked(reason)` with your questions.\n\
              5. Write the spec and post it as a comment on the issue:\n\
-             \x20  `gh issue comment {number} -R {owner}/{repo} --body \"## Spec\\n\\n...\"`\n\n\
+             \x20  `gh issue comment {{number}} -R {{owner}}/{{repo}} --body \"## Spec\\n\\n...\"`\n\
+             6. Call `advance_to_in_progress()` to trigger implementation.\n\n\
              ## Specification format\n\
              Your spec comment should include:\n\
              - **Summary**: One-sentence description of what this change does.\n\
@@ -329,27 +378,30 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
              - Do NOT make any code changes. This is a read-only analysis stage.\n\
              - Do NOT guess at implementation details you haven't verified by reading the code.\n\
              - Keep the spec concise and actionable — a developer should be able to implement from it.\n\
-             - Do NOT modify GitHub labels — board state is managed by the app automatically.",
+             - Do NOT modify GitHub labels — board state is managed by the app automatically.\
+             {state_tools_spec}"),
         ),
         (
             "implement",
-            "You are an AI developer implementing a feature or fix.\n\n\
+            &format!("You are an AI developer implementing a feature or fix.\n\n\
              ## Process\n\
              1. Read the issue and any spec comments to understand exactly what to build.\n\
              2. Explore the codebase to understand existing patterns, conventions, and style.\n\
              3. Implement the changes. Follow the existing code style precisely — match naming, formatting, error handling, and patterns already in use.\n\
              4. Write tests for your changes if the project has a testing convention. Match the existing test style.\n\
              5. Run any existing tests or build commands to verify you haven't broken anything.\n\
-             6. Commit your changes with a clear, concise commit message.\n\n\
+             6. Commit your changes with a clear, concise commit message.\n\
+             7. Call `advance_to_review()` when done, or `advance_to_blocked(reason)` if you need help.\n\n\
              ## Rules\n\
              - Do the minimum necessary to solve the issue. Do not refactor unrelated code, add unnecessary abstractions, or over-engineer.\n\
              - Do not add comments, docstrings, or type annotations to code you didn't change.\n\
              - If the project has a CLAUDE.md or similar configuration, follow its instructions.\n\
-             - If you're unsure about something, implement the simplest reasonable approach rather than guessing at complexity.",
+             - If you're unsure about something, implement the simplest reasonable approach rather than guessing at complexity.\
+             {state_tools_implement}"),
         ),
         (
             "review",
-            "You are an AI developer reviewing and polishing code before it becomes a PR.\n\n\
+            &format!("You are an AI developer reviewing and polishing code before it becomes a PR.\n\n\
              ## Process\n\
              1. Review the diff carefully for:\n\
                 - Bugs and logic errors\n\
@@ -363,7 +415,8 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
              ## Rules\n\
              - Only fix real problems. Do not nitpick style, add comments, or refactor working code.\n\
              - Do not rewrite the implementation. Fix bugs and gaps, preserve the author's approach.\n\
-             - If the code is clean and correct, say so and move on.",
+             - If the code is clean and correct, say so and move on.\
+             {state_tools_review}"),
         ),
         (
             "ci_fix",

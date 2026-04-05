@@ -241,6 +241,8 @@ pub async fn session_start(
     let spec_repo_id = repo_id;
     let spec_issue_number = issue_number;
 
+    let mcp_binary = provider::find_mcp_binary();
+
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
         let config = SessionConfig {
@@ -251,6 +253,7 @@ pub async fn session_start(
             model: model_for_spawn,
             effort: effort_for_spawn,
             resume_session_id: None,
+            mcp_binary_path: mcp_binary,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -260,32 +263,57 @@ pub async fn session_start(
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
-                update_status_via_app(&app, session_db_id, "completed", None);
 
-                // Check if the spec session was blocked (posted questions but no spec)
-                if let Ok(db) = app.state::<crate::AppState>().db.lock() {
-                    if let Ok(logs) = db::get_session_logs(&db, session_db_id) {
-                        let has_questions = logs.iter().any(|l| l.content.contains("## Questions"));
-                        let has_spec = logs.iter().any(|l| l.content.contains("## Spec"));
-                        if has_questions && !has_spec {
-                            let _ = db::set_issue_column(&db, spec_repo_id, spec_issue_number, "blocked");
-                        }
+                match res.signal {
+                    Some(provider::StateSignal::AdvanceToInProgress) => {
+                        // Spec complete — auto-start implement
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        set_issue_column_via_app(&app, spec_repo_id, spec_issue_number, "in_progress");
+                        let _ = app.emit(
+                            "session-log",
+                            SessionLogEvent {
+                                session_id: session_db_id.to_string(),
+                                entry: SessionLogEntry {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: session_db_id.to_string(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    event_type: "status_change".to_string(),
+                                    content: "Spec complete — starting implementation".to_string(),
+                                },
+                            },
+                        );
+                        auto_start_implement(&app, spec_repo_id, spec_issue_number).await;
+                    }
+                    Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                        // Spec needs human input
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        set_issue_column_via_app(&app, spec_repo_id, spec_issue_number, "blocked");
+                        let _ = app.emit(
+                            "session-blocked",
+                            serde_json::json!({
+                                "session_id": session_db_id.to_string(),
+                                "question": reason,
+                            }),
+                        );
+                    }
+                    _ => {
+                        // No signal — just mark completed
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        let _ = app.emit(
+                            "session-log",
+                            SessionLogEvent {
+                                session_id: session_db_id.to_string(),
+                                entry: SessionLogEntry {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: session_db_id.to_string(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    event_type: "status_change".to_string(),
+                                    content: "Spec stage completed".to_string(),
+                                },
+                            },
+                        );
                     }
                 }
-
-                let _ = app.emit(
-                    "session-log",
-                    SessionLogEvent {
-                        session_id: session_db_id.to_string(),
-                        entry: SessionLogEntry {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            session_id: session_db_id.to_string(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            event_type: "status_change".to_string(),
-                            content: "Spec stage completed".to_string(),
-                        },
-                    },
-                );
             }
             Err(e) => {
                 update_status_via_app(&app, session_db_id, "failed", Some(&e));
@@ -405,6 +433,9 @@ pub async fn session_start_implement(
     let provider_kind = effective_provider;
     let model_for_spawn = stage_model;
     let effort_for_spawn = stage_effort;
+    let mcp_binary = provider::find_mcp_binary();
+    let impl_repo_id = repo_id;
+    let impl_issue_number = issue_number;
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -416,53 +447,11 @@ pub async fn session_start_implement(
             model: model_for_spawn,
             effort: effort_for_spawn,
             resume_session_id: None,
+            mcp_binary_path: mcp_binary,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
-
-        match result {
-            Ok(res) => {
-                if let Some(cost) = res.cost_usd {
-                    save_session_cost(&app, session_db_id, cost);
-                }
-                update_status_via_app(&app, session_db_id, "completed", None);
-
-                let _ = app.emit(
-                    "session-log",
-                    SessionLogEvent {
-                        session_id: session_db_id.to_string(),
-                        entry: SessionLogEntry {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            session_id: session_db_id.to_string(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            event_type: "status_change".to_string(),
-                            content: "Implementation completed, advancing to review".to_string(),
-                        },
-                    },
-                );
-
-                // Auto-advance to review
-                let _ = app.emit(
-                    "session-advance",
-                    serde_json::json!({
-                        "session_id": session_db_id.to_string(),
-                        "next_stage": "review",
-                    }),
-                );
-            }
-            Err(e) => {
-                update_status_via_app(&app, session_db_id, "failed", Some(&e));
-
-                let _ = app.emit(
-                    "session-error",
-                    serde_json::json!({
-                        "session_id": session_db_id.to_string(),
-                        "error": e,
-                    }),
-                );
-            }
-        }
-
+        handle_implement_result(&app, result, session_db_id, impl_repo_id, impl_issue_number).await;
         crate::sleep::on_session_end().await;
     });
 
@@ -571,6 +560,7 @@ pub async fn session_start_review(
     let provider_kind = effective_provider;
     let model_for_spawn = stage_model;
     let effort_for_spawn = stage_effort;
+    let mcp_binary = provider::find_mcp_binary();
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -582,6 +572,7 @@ pub async fn session_start_review(
             model: model_for_spawn,
             effort: effort_for_spawn,
             resume_session_id: None,
+            mcp_binary_path: mcp_binary,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -733,11 +724,25 @@ pub async fn session_respond(
     };
     crate::sleep::on_session_start(sleep_enabled).await;
 
+    // Get repo_id and issue_number for signal handling
+    let (respond_repo_id, respond_issue_number) = {
+        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let mut stmt = db
+            .prepare("SELECT repo_id, issue_number FROM sessions WHERE id = ?1")
+            .map_err(|e| format!("Query error: {e}"))?;
+        stmt.query_row(rusqlite::params![session_db_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| format!("Session not found: {e}"))?
+    };
+
     let app = app_handle.clone();
     let wt_path = worktree_path;
     let provider_kind = effective_provider;
     let model_for_spawn = effective_model;
     let effort_for_spawn = effective_effort;
+    let mcp_binary = provider::find_mcp_binary();
+    let respond_stage = stage.clone();
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -749,6 +754,7 @@ pub async fn session_respond(
             model: model_for_spawn,
             effort: effort_for_spawn,
             resume_session_id: cli_session_id,
+            mcp_binary_path: mcp_binary,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -758,21 +764,49 @@ pub async fn session_respond(
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
-                update_status_via_app(&app, session_db_id, "completed", None);
 
-                let _ = app.emit(
-                    "session-log",
-                    SessionLogEvent {
-                        session_id: session_db_id.to_string(),
-                        entry: SessionLogEntry {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            session_id: session_db_id.to_string(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            event_type: "status_change".to_string(),
-                            content: "Session resumed and completed".to_string(),
-                        },
-                    },
-                );
+                // Handle signals based on what stage this session is in
+                match res.signal {
+                    Some(provider::StateSignal::AdvanceToInProgress) if respond_stage == "spec" => {
+                        // Spec complete after blocked response — auto-start implement
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "in_progress");
+                        auto_start_implement(&app, respond_repo_id, respond_issue_number).await;
+                    }
+                    Some(provider::StateSignal::AdvanceToReview) if respond_stage == "implement" => {
+                        // Implement complete after blocked response
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "review");
+                    }
+                    Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                        // Still blocked — need more input
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "blocked");
+                        let _ = app.emit(
+                            "session-blocked",
+                            serde_json::json!({
+                                "session_id": session_db_id.to_string(),
+                                "question": reason,
+                            }),
+                        );
+                    }
+                    _ => {
+                        update_status_via_app(&app, session_db_id, "completed", None);
+                        let _ = app.emit(
+                            "session-log",
+                            SessionLogEvent {
+                                session_id: session_db_id.to_string(),
+                                entry: SessionLogEntry {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: session_db_id.to_string(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    event_type: "status_change".to_string(),
+                                    content: "Session resumed and completed".to_string(),
+                                },
+                            },
+                        );
+                    }
+                }
             }
             Err(e) => {
                 update_status_via_app(&app, session_db_id, "failed", Some(&e));
@@ -1066,6 +1100,209 @@ pub async fn session_cleanup(
         .to_string();
 
     worktrees::remove_worktree(&repo_path, &worktree_path, &branch_name).await
+}
+
+// ── State Advancement Helpers ───────────────────────────────────────────
+
+/// Update issue column in DB and emit event to frontend.
+fn set_issue_column_via_app(app: &tauri::AppHandle, repo_id: i64, issue_number: i64, column: &str) {
+    let state = app.state::<AppState>();
+    if let Ok(db) = state.db.lock() {
+        let _ = db::set_issue_column(&db, repo_id, issue_number, column);
+    }
+    let _ = app.emit(
+        "issue-column-changed",
+        serde_json::json!({
+            "repo_id": repo_id,
+            "issue_number": issue_number,
+            "column_id": column,
+        }),
+    );
+}
+
+/// Auto-start the implement phase for an issue (called after spec signals advance_to_in_progress).
+async fn auto_start_implement(app: &tauri::AppHandle, repo_id: i64, issue_number: i64) {
+    // Check for duplicate active sessions
+    {
+        let state = app.state::<AppState>();
+        let Ok(db) = state.db.lock() else { return };
+        if let Ok(Some(_)) = db::get_active_session(&db, repo_id, issue_number) {
+            return; // Already has an active session
+        }
+    }
+
+    let (implement_prompt, stage_model, stage_effort) = {
+        let state = app.state::<AppState>();
+        let Ok(db) = state.db.lock() else { return };
+        match db::get_prompt(&db, "implement") {
+            Ok(Some(p)) => (p.prompt_text, p.model, p.effort),
+            _ => (
+                "Implement the feature as specified.".to_string(),
+                "claude-sonnet-4-6".to_string(),
+                "high".to_string(),
+            ),
+        }
+    };
+
+    let effective_provider = provider::provider_for_model(&stage_model)
+        .unwrap_or(provider::ProviderKind::Claude);
+    let the_provider = provider::get_provider_by_kind(effective_provider);
+    if the_provider.find_binary().is_err() {
+        return;
+    }
+
+    let worktree_path = {
+        let state = app.state::<AppState>();
+        let Ok(db) = state.db.lock() else { return };
+        match db::get_latest_session(&db, repo_id, issue_number) {
+            Ok(Some(s)) => s.worktree_path,
+            _ => None,
+        }
+    };
+    let Some(worktree_path) = worktree_path else { return };
+
+    let session = Session {
+        id: "0".to_string(),
+        repo_id,
+        issue_number,
+        stage: "implement".to_string(),
+        worktree_path: Some(worktree_path.clone()),
+        session_id: None,
+        status: "running".to_string(),
+        error_message: None,
+        started_at: chrono::Utc::now().to_rfc3339(),
+        completed_at: None,
+        hidden: false,
+        cost_usd: None,
+        provider: effective_provider.as_str().to_string(),
+        model: stage_model.clone(),
+    };
+
+    let session_db_id = {
+        let state = app.state::<AppState>();
+        let Ok(db) = state.db.lock() else { return };
+        match db::insert_session(&db, &session) {
+            Ok(id) => id,
+            Err(_) => return,
+        }
+    };
+
+    let session = Session {
+        id: session_db_id.to_string(),
+        ..session
+    };
+    let _ = app.emit("session-status", &session);
+
+    let (sleep_enabled, permission_mode) = {
+        let state = app.state::<AppState>();
+        let Ok(db) = state.db.lock() else { return };
+        match db::get_app_settings(&db) {
+            Ok(settings) => {
+                let mode = if settings.bypass_permissions {
+                    "bypassPermissions".to_string()
+                } else {
+                    "auto".to_string()
+                };
+                (settings.sleep_prevention, mode)
+            }
+            Err(_) => (true, "auto".to_string()),
+        }
+    };
+    crate::sleep::on_session_start(sleep_enabled).await;
+
+    let user_prompt = format!(
+        "GitHub Issue #{issue_number}\n\nImplement the feature described in the issue and spec. Write clean, well-tested code."
+    );
+    let mcp_binary = provider::find_mcp_binary();
+
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        let prov = provider::get_provider_by_kind(effective_provider);
+        let config = provider::SessionConfig {
+            worktree_path,
+            system_prompt: implement_prompt,
+            user_prompt,
+            permission_mode,
+            model: stage_model,
+            effort: stage_effort,
+            resume_session_id: None,
+            mcp_binary_path: mcp_binary,
+        };
+
+        let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app2).await;
+        handle_implement_result(&app2, result, session_db_id, repo_id, issue_number).await;
+        crate::sleep::on_session_end().await;
+    });
+}
+
+/// Handle the result of an implement session (shared by session_start_implement and auto_start_implement).
+async fn handle_implement_result(
+    app: &tauri::AppHandle,
+    result: Result<provider::ProviderSessionResult, String>,
+    session_db_id: i64,
+    repo_id: i64,
+    issue_number: i64,
+) {
+    match result {
+        Ok(res) => {
+            if let Some(cost) = res.cost_usd {
+                save_session_cost(app, session_db_id, cost);
+            }
+
+            match res.signal {
+                Some(provider::StateSignal::AdvanceToReview) => {
+                    update_status_via_app(app, session_db_id, "completed", None);
+                    set_issue_column_via_app(app, repo_id, issue_number, "review");
+                    let _ = app.emit(
+                        "session-log",
+                        SessionLogEvent {
+                            session_id: session_db_id.to_string(),
+                            entry: SessionLogEntry {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                session_id: session_db_id.to_string(),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                event_type: "status_change".to_string(),
+                                content: "Implementation complete — moved to review".to_string(),
+                            },
+                        },
+                    );
+                }
+                Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                    update_status_via_app(app, session_db_id, "completed", None);
+                    set_issue_column_via_app(app, repo_id, issue_number, "blocked");
+                    let _ = app.emit(
+                        "session-blocked",
+                        serde_json::json!({
+                            "session_id": session_db_id.to_string(),
+                            "question": reason,
+                        }),
+                    );
+                }
+                _ => {
+                    // No signal — just mark completed and advance to review by default
+                    update_status_via_app(app, session_db_id, "completed", None);
+                    set_issue_column_via_app(app, repo_id, issue_number, "review");
+                    let _ = app.emit(
+                        "session-advance",
+                        serde_json::json!({
+                            "session_id": session_db_id.to_string(),
+                            "next_stage": "review",
+                        }),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            update_status_via_app(app, session_db_id, "failed", Some(&e));
+            let _ = app.emit(
+                "session-error",
+                serde_json::json!({
+                    "session_id": session_db_id.to_string(),
+                    "error": e,
+                }),
+            );
+        }
+    }
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────
