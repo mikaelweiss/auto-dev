@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { Dialog, Tabs, Switch } from 'bits-ui';
 	import { showSettings } from '$lib/stores/ui';
-	import { appSettings, agentPrompts, loadSettings, loadPrompts } from '$lib/stores/settings';
+	import { appSettings, agentPrompts } from '$lib/stores/settings';
 	import { repos, selectedRepoId } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import type { SessionStage, AppSettings, ProviderKind } from '$lib/types';
@@ -61,50 +62,79 @@
 
 	const STAGES: SessionStage[] = ['spec', 'implement', 'review', 'ci_fix', 'merge_conflict'];
 
-	// Sync local state when dialog opens
+	// Debounce helper
+	let debounceTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+	function debounce(key: string, fn: () => void, ms = 500) {
+		clearTimeout(debounceTimers[key]);
+		debounceTimers[key] = setTimeout(fn, ms);
+	}
+
+	// Sync local state when dialog opens — only $showSettings is tracked.
+	// Fetches fresh data from backend and populates local state directly.
 	$effect(() => {
-		if ($showSettings) {
-			localSettings = { ...$appSettings };
+		if (!$showSettings) return;
 
-			for (const prompt of $agentPrompts) {
-				localPrompts[prompt.stage] = prompt.prompt_text;
-				localModels[prompt.stage] = prompt.model;
-				localEfforts[prompt.stage] = prompt.effort;
-			}
+		untrack(() => {
+			// Fetch fresh settings from backend and populate local state
+			backend.getSettings().then((s) => {
+				localSettings = { ...s };
+				appSettings.set(s);
+			});
 
+			backend.getPrompts().then((prompts) => {
+				agentPrompts.set(prompts);
+				for (const prompt of prompts) {
+					localPrompts[prompt.stage] = prompt.prompt_text;
+					localModels[prompt.stage] = prompt.model;
+					localEfforts[prompt.stage] = prompt.effort;
+				}
+			});
 
-			if (selectedRepo) {
-				repoSetupScript = selectedRepo.setup_script;
-				repoRunScript = selectedRepo.run_script;
-				repoBaseBranch = selectedRepo.base_branch;
-				repoBranchPrefix = selectedRepo.branch_prefix;
+			const repo = selectedRepo;
+			if (repo) {
+				repoSetupScript = repo.setup_script;
+				repoRunScript = repo.run_script;
+				repoBaseBranch = repo.base_branch;
+				repoBranchPrefix = repo.branch_prefix;
 
-				// Load repo local path from settings
-				backend.getRepoPath(selectedRepo.id).then((path) => {
+				backend.getRepoPath(repo.id).then((path) => {
 					repoLocalPath = path ?? '';
 				});
 			}
-
-			// Request fresh settings from backend
-			loadSettings();
-			loadPrompts();
-		}
+		});
 	});
 
 	function handleClose() {
+		// Sync local edits back to stores on close
+		appSettings.set({ ...localSettings });
 		showSettings.set(false);
 	}
 
-	function saveAppSettings() {
+	// Auto-save: persist app settings to backend
+	function persistAppSettings() {
 		localSettings.poll_interval_seconds = Math.max(5, Math.min(300, Math.round(localSettings.poll_interval_seconds)));
-		backend.updateSettings(localSettings);
+		backend.updateSettings({ ...localSettings });
 	}
 
-	function saveAllPrompts() {
-		for (const stage of STAGES) {
-			const provider = getProviderForModel(localModels[stage]);
-			backend.updatePrompt(stage, localPrompts[stage], provider, localModels[stage], localEfforts[stage]);
+	// Auto-save: persist a single prompt stage
+	function persistPrompt(stage: SessionStage) {
+		const provider = getProviderForModel(localModels[stage]);
+		backend.updatePrompt(stage, localPrompts[stage], provider, localModels[stage], localEfforts[stage]);
+	}
+
+	// Auto-save: persist repo settings
+	function persistRepoSettings() {
+		if (!selectedRepo) return;
+		if (repoLocalPath.trim()) {
+			backend.setRepoPath(selectedRepo.id, repoLocalPath.trim());
 		}
+		backend.updateRepo({
+			...selectedRepo,
+			setup_script: repoSetupScript,
+			run_script: repoRunScript,
+			base_branch: repoBaseBranch,
+			branch_prefix: repoBranchPrefix
+		});
 	}
 </script>
 
@@ -173,7 +203,7 @@
 							</div>
 							<Switch.Root
 								checked={localSettings.sleep_prevention}
-								onCheckedChange={(checked) => { localSettings.sleep_prevention = checked; }}
+								onCheckedChange={(checked) => { localSettings.sleep_prevention = checked; persistAppSettings(); }}
 								class="relative h-5 w-9 rounded-full bg-muted transition-colors data-[state=checked]:bg-primary"
 							>
 								<Switch.Thumb class="block h-4 w-4 rounded-full bg-background shadow-sm transition-transform data-[state=checked]:translate-x-4 translate-x-0.5" />
@@ -187,7 +217,7 @@
 							</div>
 							<Switch.Root
 								checked={localSettings.notifications_enabled}
-								onCheckedChange={(checked) => { localSettings.notifications_enabled = checked; }}
+								onCheckedChange={(checked) => { localSettings.notifications_enabled = checked; persistAppSettings(); }}
 								class="relative h-5 w-9 rounded-full bg-muted transition-colors data-[state=checked]:bg-primary"
 							>
 								<Switch.Thumb class="block h-4 w-4 rounded-full bg-background shadow-sm transition-transform data-[state=checked]:translate-x-4 translate-x-0.5" />
@@ -204,6 +234,7 @@
 								max="300"
 								class="w-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
 								bind:value={localSettings.poll_interval_seconds}
+								oninput={() => debounce('poll-interval', persistAppSettings)}
 							/>
 						</div>
 					</div>
@@ -227,7 +258,7 @@
 							</div>
 							<Switch.Root
 								checked={localSettings.bypass_permissions}
-								onCheckedChange={(checked) => { localSettings.bypass_permissions = checked; }}
+								onCheckedChange={(checked) => { localSettings.bypass_permissions = checked; persistAppSettings(); }}
 								class="relative h-5 w-9 rounded-full bg-muted transition-colors data-[state=checked]:bg-destructive"
 							>
 								<Switch.Thumb class="block h-4 w-4 rounded-full bg-background shadow-sm transition-transform data-[state=checked]:translate-x-4 translate-x-0.5" />
@@ -235,14 +266,6 @@
 						</div>
 					</div>
 
-					<div class="flex justify-end pt-2">
-						<button
-							class="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-							onclick={saveAppSettings}
-						>
-							Save Settings
-						</button>
-					</div>
 				</Tabs.Content>
 
 				<!-- Agent Config Tab -->
@@ -265,13 +288,14 @@
 												if (info && !info.effort_levels.includes(localEfforts[stage])) {
 													localEfforts[stage] = info.default_effort;
 												}
+												persistPrompt(stage);
 											}}
 											compact
 										/>
 									</div>
 									<div class="flex items-center gap-1.5">
 										<span class="text-xs text-muted-foreground">Effort</span>
-										{@render segmentedButtons(effortLevels, localEfforts[stage], (v) => { localEfforts[stage] = v; })}
+										{@render segmentedButtons(effortLevels, localEfforts[stage], (v) => { localEfforts[stage] = v; persistPrompt(stage); })}
 									</div>
 								</div>
 							</div>
@@ -280,18 +304,11 @@
 								class="w-full h-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-y font-mono"
 								placeholder="Custom prompt for {STAGE_LABELS[stage]} stage..."
 								bind:value={localPrompts[stage]}
+								oninput={() => debounce(`prompt-${stage}`, () => persistPrompt(stage))}
 							></textarea>
 						</div>
 					{/each}
 
-					<div class="flex justify-end pt-2">
-						<button
-							class="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-							onclick={saveAllPrompts}
-						>
-							Save Agent Config
-						</button>
-					</div>
 				</Tabs.Content>
 
 				<!-- Repository Tab -->
@@ -313,6 +330,7 @@
 								class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring font-mono"
 								placeholder="/Users/you/code/my-repo"
 								bind:value={repoLocalPath}
+								oninput={() => debounce('repo-path', persistRepoSettings)}
 							/>
 						</div>
 
@@ -324,6 +342,7 @@
 								class="w-full h-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-y font-mono"
 								placeholder="npm install && npm run build"
 								bind:value={repoSetupScript}
+								oninput={() => debounce('repo-setup', persistRepoSettings)}
 							></textarea>
 						</div>
 
@@ -335,6 +354,7 @@
 								class="w-full h-24 bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring resize-y font-mono"
 								placeholder="npm test"
 								bind:value={repoRunScript}
+								oninput={() => debounce('repo-run', persistRepoSettings)}
 							></textarea>
 						</div>
 
@@ -346,6 +366,7 @@
 									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
 									placeholder="main"
 									bind:value={repoBaseBranch}
+									oninput={() => debounce('repo-base', persistRepoSettings)}
 								/>
 							</div>
 							<div class="space-y-1.5">
@@ -355,32 +376,11 @@
 									class="w-full bg-muted rounded-md px-3 py-2 text-sm text-foreground border border-border outline-none focus:ring-1 focus:ring-ring"
 									placeholder="autodev/"
 									bind:value={repoBranchPrefix}
+									oninput={() => debounce('repo-prefix', persistRepoSettings)}
 								/>
 							</div>
 						</div>
 
-						<div class="flex justify-end pt-2">
-							<button
-								class="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-								onclick={async () => {
-									if (!selectedRepo) return;
-									// Save repo local path
-									if (repoLocalPath.trim()) {
-										await backend.setRepoPath(selectedRepo.id, repoLocalPath.trim());
-									}
-									// Save repo config
-									await backend.updateRepo({
-										...selectedRepo,
-										setup_script: repoSetupScript,
-										run_script: repoRunScript,
-										base_branch: repoBaseBranch,
-										branch_prefix: repoBranchPrefix,
-		});
-								}}
-							>
-								Save Repository Settings
-							</button>
-						</div>
 					{/if}
 				</Tabs.Content>
 			</Tabs.Root>

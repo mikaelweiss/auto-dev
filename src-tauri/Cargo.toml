@@ -2,6 +2,7 @@
 name = "auto-dev"
 version = "0.1.0"
 edition = "2021"
+default-run = "auto-dev"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -19,3 +20,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
+
+[[bin]]
+name = "autodev-mcp"
+path = "src/bin/autodev_mcp.rs"

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Brain, Send, Square } from 'lucide-svelte';
 	import * as backend from '$lib/stores/backend';
+	import { agentPrompts } from '$lib/stores/settings';
 	import type { Session, Issue, RepoConfig } from '$lib/types';
 	import { getModelInfo } from '$lib/types';
 	import ModelPicker from './ModelPicker.svelte';
@@ -17,8 +18,36 @@
 
 	let { session, issue, repoConfig, onNewSession, onTest, onMerge, onCopy }: Props = $props();
 
-	let selectedModel = $state('claude-sonnet-4-6');
-	let selectedEffort = $state('high');
+	// Initialize from active session's model, or fall back to the spec stage prompt settings
+	let defaultModel = $derived(
+		session?.model ??
+		$agentPrompts.find(p => p.stage === 'spec')?.model ??
+		'claude-sonnet-4-6'
+	);
+	let defaultEffort = $derived(
+		$agentPrompts.find(p => p.stage === (session?.stage ?? 'spec'))?.effort ??
+		'high'
+	);
+
+	let selectedModel = $state('');
+	let selectedEffort = $state('');
+	let lastSessionId = $state('');
+
+	// Sync picker to session/defaults when session changes
+	$effect(() => {
+		const sid = session?.id ?? '';
+		if (sid !== lastSessionId) {
+			lastSessionId = sid;
+			selectedModel = defaultModel;
+			selectedEffort = defaultEffort;
+		}
+	});
+
+	// Initialize on first render
+	$effect(() => {
+		if (!selectedModel) selectedModel = defaultModel;
+		if (!selectedEffort) selectedEffort = defaultEffort;
+	});
 
 	let effortLevels = $derived(getModelInfo(selectedModel)?.effort_levels ?? ['low', 'medium', 'high', 'max']);
 

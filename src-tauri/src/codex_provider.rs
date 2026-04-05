@@ -1,4 +1,4 @@
-use crate::provider::{ParsedLine, Provider, ProviderKind, SessionConfig};
+use crate::provider::{self, ParsedLine, Provider, ProviderKind, SessionConfig};
 use crate::sdk_types::LogEntry;
 use serde_json::Value;
 
@@ -64,6 +64,17 @@ impl Provider for CodexProvider {
         // Working directory
         cmd.args(["-C", &config.worktree_path]);
 
+        // Write MCP config file for autodev state advancement
+        if let Some(ref mcp_binary) = config.mcp_binary_path {
+            let codex_dir = std::path::Path::new(&config.worktree_path).join(".codex");
+            let _ = std::fs::create_dir_all(&codex_dir);
+            let config_content = format!(
+                "[mcp_servers.autodev]\ncommand = \"{}\"\n",
+                mcp_binary.replace('\\', "\\\\").replace('"', "\\\"")
+            );
+            let _ = std::fs::write(codex_dir.join("config.toml"), config_content);
+        }
+
         // System prompt via config override
         if config.resume_session_id.is_none() && !config.system_prompt.is_empty() {
             cmd.args(["-c", &format!("instructions=\"{}\"", config.system_prompt.replace('"', "\\\""))]);
@@ -92,6 +103,7 @@ impl Provider for CodexProvider {
                 entries: vec![],
                 session_id: None,
                 cost_usd: None,
+                signal: None,
             };
         }
 
@@ -107,6 +119,7 @@ impl Provider for CodexProvider {
             }],
             session_id: None,
             cost_usd: None,
+            signal: None,
         }
     }
 }
@@ -124,6 +137,9 @@ impl CodexProvider {
     fn parse_json_line(&self, json: &Value) -> ParsedLine {
         let msg_type = json["type"].as_str().unwrap_or("");
 
+        // Check for MCP state signals in every line
+        let signal = provider::detect_signal_from_json(json);
+
         match msg_type {
             // Thread started — capture session/thread ID
             "thread.started" => {
@@ -132,6 +148,7 @@ impl CodexProvider {
                     entries: vec![],
                     session_id: thread_id,
                     cost_usd: None,
+                    signal,
                 }
             }
 
@@ -145,7 +162,7 @@ impl CodexProvider {
                     "agent_message" | "message" => {
                         let text = item["text"].as_str().unwrap_or("").to_string();
                         if text.is_empty() {
-                            ParsedLine { entries: vec![], session_id: None, cost_usd: None }
+                            ParsedLine { entries: vec![], session_id: None, cost_usd: None, signal }
                         } else {
                             ParsedLine {
                                 entries: vec![LogEntry {
@@ -154,6 +171,7 @@ impl CodexProvider {
                                 }],
                                 session_id: None,
                                 cost_usd: None,
+                                signal,
                             }
                         }
                     }
@@ -186,7 +204,22 @@ impl CodexProvider {
                             }
                         }
 
-                        ParsedLine { entries, session_id: None, cost_usd: None }
+                        ParsedLine { entries, session_id: None, cost_usd: None, signal }
+                    }
+
+                    // MCP tool call — log it and check for signals
+                    "mcp_tool_call" => {
+                        let tool = item["details"]["tool"].as_str().unwrap_or("mcp_tool");
+                        let server = item["details"]["server"].as_str().unwrap_or("");
+                        ParsedLine {
+                            entries: vec![LogEntry {
+                                event_type: "tool_call".into(),
+                                content: format!("MCP ({server}): {tool}"),
+                            }],
+                            session_id: None,
+                            cost_usd: None,
+                            signal,
+                        }
                     }
 
                     // File changes
@@ -202,6 +235,7 @@ impl CodexProvider {
                             }],
                             session_id: None,
                             cost_usd: None,
+                            signal,
                         }
                     }
 
@@ -213,7 +247,7 @@ impl CodexProvider {
                             .unwrap_or("")
                             .to_string();
                         if text.is_empty() {
-                            ParsedLine { entries: vec![], session_id: None, cost_usd: None }
+                            ParsedLine { entries: vec![], session_id: None, cost_usd: None, signal }
                         } else {
                             ParsedLine {
                                 entries: vec![LogEntry {
@@ -222,11 +256,12 @@ impl CodexProvider {
                                 }],
                                 session_id: None,
                                 cost_usd: None,
+                                signal,
                             }
                         }
                     }
 
-                    _ => ParsedLine { entries: vec![], session_id: None, cost_usd: None },
+                    _ => ParsedLine { entries: vec![], session_id: None, cost_usd: None, signal },
                 }
             }
 
@@ -245,9 +280,10 @@ impl CodexProvider {
                         }],
                         session_id: None,
                         cost_usd: None,
+                        signal,
                     }
                 } else {
-                    ParsedLine { entries: vec![], session_id: None, cost_usd: None }
+                    ParsedLine { entries: vec![], session_id: None, cost_usd: None, signal }
                 }
             }
 
@@ -265,7 +301,7 @@ impl CodexProvider {
                     vec![]
                 };
 
-                ParsedLine { entries, session_id: None, cost_usd: None }
+                ParsedLine { entries, session_id: None, cost_usd: None, signal }
             }
 
             // Error events
@@ -284,11 +320,12 @@ impl CodexProvider {
                     }],
                     session_id: None,
                     cost_usd: None,
+                    signal,
                 }
             }
 
             // turn.started, thread.updated, etc — no useful info to show
-            _ => ParsedLine { entries: vec![], session_id: None, cost_usd: None },
+            _ => ParsedLine { entries: vec![], session_id: None, cost_usd: None, signal },
         }
     }
 }
