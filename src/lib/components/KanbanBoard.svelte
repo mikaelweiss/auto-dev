@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Issue, ColumnId } from '$lib/types';
 	import { COLUMN_ORDER, COLUMN_CONFIG, getColumnForIssue } from '$lib/types';
-	import { issuesByColumn, refreshIssues } from '$lib/stores/issues';
+	import { issuesByColumn, refreshIssues, loadMoreIssues, hasMoreIssues } from '$lib/stores/issues';
 	import { repos } from '$lib/stores/repos';
 	import * as backend from '$lib/stores/backend';
 	import { type DndEvent, TRIGGERS } from 'svelte-dnd-action';
@@ -126,6 +126,7 @@
 				issues={columns[colId]}
 				onconsider={handleConsider}
 				onfinalize={handleFinalize}
+				onloadmore={$hasMoreIssues ? loadMoreIssues : undefined}
 			/>
 		{/each}
 	</div>

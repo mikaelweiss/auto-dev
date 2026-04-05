@@ -158,8 +158,8 @@ export async function listCollaborators(owner: string, name: string): Promise<Gi
 }
 
 // Issues
-export async function fetchIssues(owner: string, name: string): Promise<Issue[]> {
-	return invoke('github_fetch_issues', { owner, name });
+export async function fetchIssues(owner: string, name: string, page: number = 1): Promise<Issue[]> {
+	return invoke('github_fetch_issues', { owner, name, page });
 }
 
 export async function createIssue(

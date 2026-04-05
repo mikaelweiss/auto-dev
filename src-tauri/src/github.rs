@@ -449,48 +449,36 @@ pub async fn github_fetch_issues(
     state: tauri::State<'_, AppState>,
     owner: String,
     name: String,
+    page: Option<u32>,
 ) -> Result<Vec<Issue>, String> {
     let token = get_token(&state)?;
     let client = &state.http_client;
+    let page = page.unwrap_or(1);
 
-    let mut all_issues = Vec::new();
-    let mut page = 1u32;
+    let resp = client
+        .get(format!(
+            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated&page={page}"
+        ))
+        .headers(github_headers(&token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch issues: {e}"))?;
 
-    loop {
-        let resp = client
-            .get(format!(
-                "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated&page={page}"
-            ))
-            .headers(github_headers(&token))
-            .send()
-            .await
-            .map_err(|e| format!("Failed to fetch issues: {e}"))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("GitHub API error {}", resp.status()));
-        }
-
-        let issues: Vec<Issue> = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse issues: {e}"))?;
-
-        let count = issues.len();
-        all_issues.extend(issues);
-
-        if count < 100 {
-            break;
-        }
-        page += 1;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error {}", resp.status()));
     }
 
-    // Annotate with repo info
-    for issue in &mut all_issues {
+    let mut issues: Vec<Issue> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse issues: {e}"))?;
+
+    for issue in &mut issues {
         issue.repo_owner = owner.clone();
         issue.repo_name = name.clone();
     }
 
-    Ok(all_issues)
+    Ok(issues)
 }
 
 #[tauri::command]
@@ -805,48 +793,36 @@ fn urlencoding_label(label: &str) -> String {
     label.replace(' ', "%20")
 }
 
-/// Fetch issues for a repo (non-command helper used by polling)
+/// Fetch issues for a repo (non-command helper used by polling).
+/// Only fetches the first page (100 most recently updated) to keep polls fast.
 pub async fn fetch_issues_for_repo(
     client: &Client,
     token: &str,
     owner: &str,
     name: &str,
 ) -> Result<Vec<Issue>, String> {
-    let mut all_issues = Vec::new();
-    let mut page = 1u32;
+    let resp = client
+        .get(format!(
+            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated"
+        ))
+        .headers(github_headers(token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch issues: {e}"))?;
 
-    loop {
-        let resp = client
-            .get(format!(
-                "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated&page={page}"
-            ))
-            .headers(github_headers(token))
-            .send()
-            .await
-            .map_err(|e| format!("Failed to fetch issues: {e}"))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("GitHub API error {}", resp.status()));
-        }
-
-        let issues: Vec<Issue> = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse issues: {e}"))?;
-
-        let count = issues.len();
-        all_issues.extend(issues);
-
-        if count < 100 {
-            break;
-        }
-        page += 1;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error {}", resp.status()));
     }
 
-    for issue in &mut all_issues {
+    let mut issues: Vec<Issue> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse issues: {e}"))?;
+
+    for issue in &mut issues {
         issue.repo_owner = owner.to_string();
         issue.repo_name = name.to_string();
     }
 
-    Ok(all_issues)
+    Ok(issues)
 }
