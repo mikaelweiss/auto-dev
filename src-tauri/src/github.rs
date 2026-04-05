@@ -443,13 +443,15 @@ pub async fn github_fetch_issues(
     state: tauri::State<'_, AppState>,
     owner: String,
     name: String,
+    page: Option<u32>,
 ) -> Result<Vec<Issue>, String> {
     let token = get_token(&state)?;
     let client = &state.http_client;
+    let page = page.unwrap_or(1);
 
     let resp = client
         .get(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated"
+            "{GITHUB_API}/repos/{owner}/{name}/issues?state=all&per_page=100&sort=updated&page={page}"
         ))
         .headers(github_headers(&token))
         .send()
@@ -465,7 +467,6 @@ pub async fn github_fetch_issues(
         .await
         .map_err(|e| format!("Failed to parse issues: {e}"))?;
 
-    // Annotate with repo info
     for issue in &mut issues {
         issue.repo_owner = owner.clone();
         issue.repo_name = name.clone();
@@ -679,7 +680,8 @@ async fn fetch_current_user(client: &Client, token: &str) -> Result<GitHubUser, 
     Ok(user)
 }
 
-/// Fetch issues for a repo (non-command helper used by polling)
+/// Fetch issues for a repo (non-command helper used by polling).
+/// Only fetches the first page (100 most recently updated) to keep polls fast.
 pub async fn fetch_issues_for_repo(
     client: &Client,
     token: &str,
