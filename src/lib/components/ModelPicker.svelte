@@ -49,11 +49,11 @@
 		if (open) {
 			document.addEventListener('click', handleClickOutside, true);
 			document.addEventListener('keydown', handleKeydown);
-			return () => {
-				document.removeEventListener('click', handleClickOutside, true);
-				document.removeEventListener('keydown', handleKeydown);
-			};
 		}
+		return () => {
+			document.removeEventListener('click', handleClickOutside, true);
+			document.removeEventListener('keydown', handleKeydown);
+		};
 	});
 </script>
 

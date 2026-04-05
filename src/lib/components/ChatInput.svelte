@@ -80,6 +80,7 @@
 	let selectedMenuIndex = $state(0);
 	let files: string[] = $state([]);
 	let filesLoading = $state(false);
+	let filesError = $state('');
 	let menuContainer: HTMLDivElement | undefined = $state(undefined);
 
 	let isRunning = $derived(
@@ -154,10 +155,12 @@
 	async function loadFiles() {
 		if (!session) return;
 		filesLoading = true;
+		filesError = '';
 		try {
 			files = await backend.listSessionFiles(session.id);
 		} catch {
 			files = [];
+			filesError = 'Failed to load files';
 		}
 		filesLoading = false;
 	}
@@ -304,6 +307,8 @@
 		>
 			{#if filesLoading}
 				<div class="px-4 py-2 text-xs text-muted-foreground">Loading files...</div>
+			{:else if filesError}
+				<div class="px-4 py-2 text-xs text-red-400">{filesError}</div>
 			{:else}
 				{#each filteredFiles as file, i (file)}
 					<button

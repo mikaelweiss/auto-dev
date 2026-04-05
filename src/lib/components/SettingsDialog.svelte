@@ -112,6 +112,7 @@
 
 	// Auto-save: persist app settings to backend
 	function persistAppSettings() {
+		localSettings.poll_interval_seconds = Math.max(5, Math.min(300, Math.round(localSettings.poll_interval_seconds)));
 		backend.updateSettings({ ...localSettings });
 	}
 

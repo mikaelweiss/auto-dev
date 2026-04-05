@@ -77,9 +77,13 @@ pub async fn create_worktree(
 
             if !output2.status.success() {
                 let stderr2 = String::from_utf8_lossy(&output2.stderr);
+                // Clean up partial directory so the next attempt starts fresh
+                let _ = std::fs::remove_dir_all(&wt_path);
                 return Err(format!("Failed to create worktree: {stderr2}"));
             }
         } else {
+            // Clean up partial directory so the next attempt starts fresh
+            let _ = std::fs::remove_dir_all(&wt_path);
             return Err(format!("Failed to create worktree: {stderr}"));
         }
     }
