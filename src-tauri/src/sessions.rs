@@ -64,17 +64,6 @@ pub async fn session_start(
     model_override: Option<String>,
     effort_override: Option<String>,
 ) -> Result<Session, String> {
-    // Prevent duplicate sessions
-    {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        if let Some(active) = db::get_active_session(&db, repo_id, issue_number)? {
-            return Err(format!(
-                "Issue #{issue_number} already has an active {} session",
-                active.stage
-            ));
-        }
-    }
-
     // Get model config from stage defaults, with optional overrides
     let (spec_prompt, stage_model, stage_effort) = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
@@ -96,7 +85,7 @@ pub async fn session_start(
         .unwrap_or(provider::ProviderKind::Claude);
     let the_provider = provider::get_provider_by_kind(effective_provider);
 
-    // ── Create session IMMEDIATELY so the card is pinned ──
+    // ── Atomically check for duplicates + create session so the card is pinned ──
     let session = Session {
         id: "0".to_string(),
         repo_id,
@@ -116,7 +105,7 @@ pub async fn session_start(
 
     let session_db_id = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::insert_session(&db, &session)?
+        db::check_and_insert_session(&db, &session)?
     };
 
     let mut session = Session {
@@ -313,17 +302,6 @@ pub async fn session_start_implement(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
-    // Prevent duplicate sessions
-    {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        if let Some(active) = db::get_active_session(&db, repo_id, issue_number)? {
-            return Err(format!(
-                "Issue #{issue_number} already has an active {} session",
-                active.stage
-            ));
-        }
-    }
-
     {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         db::get_repo_by_id(&db, repo_id)?
@@ -372,9 +350,10 @@ pub async fn session_start_implement(
         model: stage_model.clone(),
     };
 
+    // Atomically check for duplicates + insert
     let session_db_id = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::insert_session(&db, &session)?
+        db::check_and_insert_session(&db, &session)?
     };
 
     let session = Session {
@@ -476,17 +455,6 @@ pub async fn session_start_review(
     repo_id: i64,
     issue_number: i64,
 ) -> Result<Session, String> {
-    // Prevent duplicate sessions
-    {
-        let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        if let Some(active) = db::get_active_session(&db, repo_id, issue_number)? {
-            return Err(format!(
-                "Issue #{issue_number} already has an active {} session",
-                active.stage
-            ));
-        }
-    }
-
     let repo = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
         db::get_repo_by_id(&db, repo_id)?
@@ -537,9 +505,10 @@ pub async fn session_start_review(
         model: stage_model.clone(),
     };
 
+    // Atomically check for duplicates + insert
     let session_db_id = {
         let db = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
-        db::insert_session(&db, &session)?
+        db::check_and_insert_session(&db, &session)?
     };
 
     let session = Session {
@@ -850,8 +819,10 @@ pub async fn session_stop(
     if let Some(pid) = pid {
         // Send SIGTERM to the process group so child processes also die
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+        if pid > 1 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGTERM);
+            }
         }
 
         // Mark as completed — this is a user-initiated stop, not a failure

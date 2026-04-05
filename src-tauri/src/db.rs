@@ -681,6 +681,22 @@ pub fn insert_session(conn: &Connection, session: &Session) -> Result<i64, Strin
     Ok(conn.last_insert_rowid())
 }
 
+/// Atomically check for an active session and insert a new one if none exists.
+/// This prevents the race condition where two threads both check, find no active session,
+/// and then both insert.
+pub fn check_and_insert_session(
+    conn: &Connection,
+    session: &Session,
+) -> Result<i64, String> {
+    if let Some(active) = get_active_session(conn, session.repo_id, session.issue_number)? {
+        return Err(format!(
+            "Issue #{} already has an active {} session",
+            session.issue_number, active.stage
+        ));
+    }
+    insert_session(conn, session)
+}
+
 /// Mark any sessions left in active states as failed (app was quit mid-session).
 pub fn fail_orphaned_sessions(conn: &Connection) -> Result<u64, String> {
     let completed_at = chrono::Utc::now().to_rfc3339();

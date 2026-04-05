@@ -120,9 +120,12 @@
 		return commands.filter((c) => c.label.toLowerCase().includes(q));
 	});
 
+	// Reset selection when the filtered list changes
+	let prevFilteredRef: Command[] = [];
 	$effect(() => {
-		if (selectedIndex >= filtered.length) {
-			selectedIndex = Math.max(0, filtered.length - 1);
+		if (filtered !== prevFilteredRef) {
+			prevFilteredRef = filtered;
+			selectedIndex = 0;
 		}
 	});
 

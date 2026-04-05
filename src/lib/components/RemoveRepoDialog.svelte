@@ -9,16 +9,18 @@
 	let removing = $state(false);
 	let error = $state('');
 	let info = $state<RepoRemovalInfo | null>(null);
+	let requestId = 0;
 
 	$effect(() => {
 		if ($removeRepoId != null) {
 			loading = true;
 			error = '';
 			info = null;
+			const thisRequest = ++requestId;
 			getRepoRemovalInfo($removeRepoId)
-				.then((result) => { info = result; })
-				.catch((e) => { error = e instanceof Error ? e.message : String(e); })
-				.finally(() => { loading = false; });
+				.then((result) => { if (requestId === thisRequest) info = result; })
+				.catch((e) => { if (requestId === thisRequest) error = e instanceof Error ? e.message : String(e); })
+				.finally(() => { if (requestId === thisRequest) loading = false; });
 		}
 	});
 
