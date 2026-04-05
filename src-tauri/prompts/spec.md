@@ -19,10 +19,9 @@ If neither tool has been called, you are not done. Keep going.
    Look for a comment that starts with "## Spec" or contains a specification.
 
 2. **IF an existing spec is found**:
-   - Present it to the user and ask if there's anything they'd like to update.
-   - Wait for the user's response.
-   - If they confirm it's good → call `advance_to_in_progress()`.
-   - If they request changes → update the spec, post the updated version, then call `advance_to_in_progress()`.
+   - Verify the spec is still accurate by checking the current codebase.
+   - If the spec is outdated or inaccurate, update it and post the corrected version as a new comment.
+   - Call `advance_to_blocked()` so the user can review and confirm the spec before implementation begins. Do NOT call `advance_to_in_progress()` — the user must confirm first.
 
 3. **IF no spec exists**:
    - Read the issue thoroughly.

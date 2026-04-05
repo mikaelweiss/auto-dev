@@ -299,8 +299,8 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         eprintln!("[DB] sessions provider/model migration complete");
     }
 
-    // Migration: refresh default prompts to include MCP state advancement tools
-    // We detect this by checking if the spec prompt already mentions advance_to_blocked.
+    // Migration: refresh default prompts when they're outdated.
+    // We detect this by checking if the spec prompt contains the latest sentinel string.
     let needs_prompt_refresh: bool = conn
         .query_row(
             "SELECT prompt_text FROM agent_prompts WHERE stage = 'spec' AND is_default = 1",
@@ -308,12 +308,11 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
             |row| row.get::<_, String>(0),
         )
         .ok()
-        .map(|text| !text.contains("advance_to_blocked"))
+        .map(|text| !text.contains("the user must confirm first"))
         .unwrap_or(false);
 
     if needs_prompt_refresh {
-        eprintln!("[DB] Refreshing default prompts with MCP state advancement tools");
-        // Delete old default prompts so seed_default_prompts re-inserts them
+        eprintln!("[DB] Refreshing default prompts (spec prompt updated)");
         conn.execute_batch(
             "DELETE FROM agent_prompts WHERE is_default = 1;",
         )

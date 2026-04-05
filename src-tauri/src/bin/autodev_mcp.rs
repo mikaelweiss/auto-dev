@@ -23,39 +23,23 @@ fn main() {
 }
 
 fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
-    // Read headers until empty line
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = String::new();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
-            return Ok(None); // EOF
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break; // End of headers
-        }
-        if let Some(len_str) = trimmed.strip_prefix("Content-Length: ") {
-            content_length = len_str.trim().parse().ok();
-        }
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line)?;
+    if bytes == 0 {
+        return Ok(None); // EOF
     }
-
-    let length = match content_length {
-        Some(len) => len,
-        None => return Ok(None),
-    };
-
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body)?;
-
-    serde_json::from_slice(&body)
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(trimmed)
         .map(Some)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 fn write_message(writer: &mut impl Write, msg: &Value) -> io::Result<()> {
     let body = serde_json::to_string(msg)?;
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+    writeln!(writer, "{body}")?;
     writer.flush()
 }
 
@@ -68,7 +52,7 @@ fn handle_request(request: &Value) -> Option<Value> {
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "serverInfo": {
                     "name": "autodev",
                     "version": "0.1.0"
