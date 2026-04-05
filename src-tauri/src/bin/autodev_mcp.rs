@@ -92,13 +92,8 @@ fn handle_request(request: &Value) -> Option<Value> {
                         "description": "Signal that this issue needs human input before the AI can proceed. Call this when you have blocking questions or need clarification from the user.",
                         "inputSchema": {
                             "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "description": "The specific questions or blockers that need human input"
-                                }
-                            },
-                            "required": ["reason"]
+                            "properties": {},
+                            "required": []
                         }
                     },
                     {

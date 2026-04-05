@@ -273,17 +273,10 @@ pub async fn session_start(
                         );
                         auto_start_implement(&app, spec_repo_id, spec_issue_number).await;
                     }
-                    Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                    Some(provider::StateSignal::AdvanceToBlocked) => {
                         // Spec needs human input
                         update_status_via_app(&app, session_db_id, "completed", None);
                         set_issue_column_via_app(&app, spec_repo_id, spec_issue_number, "blocked");
-                        let _ = app.emit(
-                            "session-blocked",
-                            serde_json::json!({
-                                "session_id": session_db_id.to_string(),
-                                "question": reason,
-                            }),
-                        );
                     }
                     _ => {
                         // No signal — just mark completed
@@ -747,17 +740,10 @@ pub async fn session_respond(
                         update_status_via_app(&app, session_db_id, "completed", None);
                         set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "review");
                     }
-                    Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                    Some(provider::StateSignal::AdvanceToBlocked) => {
                         // Still blocked — need more input
                         update_status_via_app(&app, session_db_id, "completed", None);
                         set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "blocked");
-                        let _ = app.emit(
-                            "session-blocked",
-                            serde_json::json!({
-                                "session_id": session_db_id.to_string(),
-                                "question": reason,
-                            }),
-                        );
                     }
                     _ => {
                         update_status_via_app(&app, session_db_id, "completed", None);
@@ -1238,16 +1224,9 @@ async fn handle_implement_result(
                         },
                     );
                 }
-                Some(provider::StateSignal::AdvanceToBlocked { ref reason }) => {
+                Some(provider::StateSignal::AdvanceToBlocked) => {
                     update_status_via_app(app, session_db_id, "completed", None);
                     set_issue_column_via_app(app, repo_id, issue_number, "blocked");
-                    let _ = app.emit(
-                        "session-blocked",
-                        serde_json::json!({
-                            "session_id": session_db_id.to_string(),
-                            "question": reason,
-                        }),
-                    );
                 }
                 _ => {
                     // No signal — just mark completed and advance to review by default
