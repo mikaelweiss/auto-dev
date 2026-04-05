@@ -181,7 +181,7 @@
 	{:else}
 		<!-- Main App -->
 		<!-- Top Bar -->
-		<header class="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-background/80 backdrop-blur-sm" data-tauri-drag-region>
+		<header class="shrink-0 flex items-center justify-between pr-4 pl-[95px] h-[52px] border-b border-border bg-background/80 backdrop-blur-sm" data-tauri-drag-region>
 			<div class="flex items-center gap-3">
 				<span class="text-sm font-semibold text-foreground">AutoDev</span>
 				<RepoSelector />

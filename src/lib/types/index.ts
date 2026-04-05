@@ -12,11 +12,6 @@ export interface GitHubUser {
 	id: number;
 }
 
-export interface GitHubLabel {
-	name: string;
-	color: string;
-}
-
 export interface Issue {
 	id: number;
 	number: number;
@@ -24,7 +19,7 @@ export interface Issue {
 	body: string;
 	state: 'open' | 'closed';
 	assignee: GitHubUser | null;
-	labels: GitHubLabel[];
+	labels: { name: string; color: string }[];
 	created_at: string;
 	updated_at: string;
 	pull_request?: { url: string; html_url: string };
@@ -161,13 +156,13 @@ export interface AppSettings {
 	bypass_permissions: boolean;
 }
 
-export const COLUMN_CONFIG: Record<ColumnId, { label: string; github_label: string | null }> = {
-	backlog: { label: 'Backlog', github_label: null },
-	planning: { label: 'Planning', github_label: 'autodev:planning' },
-	in_progress: { label: 'In Progress', github_label: 'autodev:in-progress' },
-	blocked: { label: 'Blocked', github_label: 'autodev:blocked' },
-	review: { label: 'Ready for Review', github_label: 'autodev:review' },
-	done: { label: 'Done', github_label: null }
+export const COLUMN_CONFIG: Record<ColumnId, { label: string }> = {
+	backlog: { label: 'Backlog' },
+	planning: { label: 'Planning' },
+	in_progress: { label: 'In Progress' },
+	blocked: { label: 'Blocked' },
+	review: { label: 'Ready for Review' },
+	done: { label: 'Done' }
 };
 
 export const COLUMN_ORDER: ColumnId[] = [
@@ -178,17 +173,6 @@ export const COLUMN_ORDER: ColumnId[] = [
 	'review',
 	'done'
 ];
-
-/** Column from GitHub labels only — used when there's no local session. */
-export function getColumnForIssue(issue: Issue): ColumnId {
-	if (issue.state === 'closed') return 'done';
-	const labelNames = issue.labels.map((l) => l.name);
-	if (labelNames.includes('autodev:review')) return 'review';
-	if (labelNames.includes('autodev:blocked')) return 'blocked';
-	if (labelNames.includes('autodev:in-progress')) return 'in_progress';
-	if (labelNames.includes('autodev:planning')) return 'planning';
-	return 'backlog';
-}
 
 /** Column from local session state — takes priority over GitHub labels. */
 export function getColumnForSession(session: Session): ColumnId {

@@ -11,9 +11,10 @@ import type {
 	AppSettings,
 	AgentPrompt,
 	SessionStage,
-	ModelInfo
+	ModelInfo,
+	ColumnId
 } from '$lib/types';
-import { issues } from './issues';
+import { issues, issueStates } from './issues';
 import { sessions, sessionLogs } from './sessions';
 
 // Initialize: set up event listeners for Rust -> frontend events
@@ -113,6 +114,20 @@ export async function initBackend() {
 			return new Map(current);
 		});
 	});
+}
+
+export async function loadIssueStates(repoId: number) {
+	try {
+		const states = await getIssueStates(repoId);
+		issueStates.update((current) => {
+			for (const [issueNumber, columnId] of states) {
+				current.set(`${repoId}:${issueNumber}`, columnId as ColumnId);
+			}
+			return new Map(current);
+		});
+	} catch (_) {
+		// Failed to load issue states
+	}
 }
 
 // Auth
@@ -219,23 +234,17 @@ export async function stopSession(sessionId: string): Promise<void> {
 	return invoke('session_stop', { sessionId });
 }
 
-// Labels
-export async function addLabel(
-	owner: string,
-	name: string,
-	issueNumber: number,
-	label: string
-): Promise<void> {
-	return invoke('github_add_label', { owner, name, issueNumber, label });
+// Issue State
+export async function getIssueStates(repoId: number): Promise<[number, string][]> {
+	return invoke('get_issue_states', { repoId });
 }
 
-export async function removeLabel(
-	owner: string,
-	name: string,
+export async function setIssueColumn(
+	repoId: number,
 	issueNumber: number,
-	label: string
+	columnId: string
 ): Promise<void> {
-	return invoke('github_remove_label', { owner, name, issueNumber, label });
+	return invoke('set_issue_column', { repoId, issueNumber, columnId });
 }
 
 export async function closeIssue(

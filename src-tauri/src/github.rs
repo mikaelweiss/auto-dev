@@ -222,9 +222,6 @@ pub async fn github_add_repo(
         db::set_setting(&db, &format!("repo_{repo_id}_path"), repo_dir.to_str().unwrap())?;
     }
 
-    // Ensure autodev labels exist on the repo
-    ensure_labels(client, &token, &owner, &name).await?;
-
     Ok(RepoConfig { id: repo_id, ..repo })
 }
 
@@ -302,9 +299,6 @@ pub async fn github_add_local_repo(
         let db = state.db.lock().map_err(|e| format!("DB lock error: {e}"))?;
         db::set_setting(&db, &format!("repo_{repo_id}_path"), &path)?;
     }
-
-    // Ensure autodev labels exist on the repo
-    ensure_labels(client, &token, &owner, &name).await?;
 
     Ok(RepoConfig { id: repo_id, ..repo })
 }
@@ -528,66 +522,6 @@ pub async fn github_create_issue(
 }
 
 #[tauri::command]
-pub async fn github_add_label(
-    state: tauri::State<'_, AppState>,
-    owner: String,
-    name: String,
-    issue_number: i64,
-    label: String,
-) -> Result<(), String> {
-    let token = get_token(&state)?;
-    let client = &state.http_client;
-
-    let resp = client
-        .post(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels"
-        ))
-        .headers(github_headers(&token))
-        .json(&json!({ "labels": [label] }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to add label: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API error adding label: {}", resp.status()));
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn github_remove_label(
-    state: tauri::State<'_, AppState>,
-    owner: String,
-    name: String,
-    issue_number: i64,
-    label: String,
-) -> Result<(), String> {
-    let token = get_token(&state)?;
-    let client = &state.http_client;
-
-    let encoded_label = urlencoding_label(&label);
-    let resp = client
-        .delete(format!(
-            "{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}/labels/{encoded_label}"
-        ))
-        .headers(github_headers(&token))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to remove label: {e}"))?;
-
-    // Ignore 404 — label might not be present
-    if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-        return Err(format!(
-            "GitHub API error removing label: {}",
-            resp.status()
-        ));
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn github_post_comment(
     state: tauri::State<'_, AppState>,
     owner: String,
@@ -744,53 +678,6 @@ async fn fetch_current_user(client: &Client, token: &str) -> Result<GitHubUser, 
         .map_err(|e| format!("Failed to parse user: {e}"))?;
 
     Ok(user)
-}
-
-async fn ensure_labels(
-    client: &Client,
-    token: &str,
-    owner: &str,
-    name: &str,
-) -> Result<(), String> {
-    let labels = [
-        ("autodev:planning", "0E8A16"),
-        ("autodev:in-progress", "1D76DB"),
-        ("autodev:blocked", "E4E669"),
-        ("autodev:review", "5319E7"),
-    ];
-
-    for (label_name, color) in &labels {
-        let resp = client
-            .post(format!("{GITHUB_API}/repos/{owner}/{name}/labels"))
-            .headers(github_headers(token))
-            .json(&json!({
-                "name": label_name,
-                "color": color,
-            }))
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) => {
-                // 422 means label already exists — that's fine
-                if !r.status().is_success()
-                    && r.status() != reqwest::StatusCode::UNPROCESSABLE_ENTITY
-                {
-                    eprintln!("Warning: Failed to create label {label_name}: {}", r.status());
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to create label {label_name}: {e}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Percent-encode a label for use in URL paths (colons are fine per GitHub API)
-fn urlencoding_label(label: &str) -> String {
-    label.replace(' ', "%20")
 }
 
 /// Fetch issues for a repo (non-command helper used by polling).

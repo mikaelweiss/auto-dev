@@ -89,6 +89,13 @@ fn create_tables(conn: &Connection) -> Result<(), String> {
             event_type TEXT NOT NULL,
             content TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS issue_state (
+            repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+            issue_number INTEGER NOT NULL,
+            column_id TEXT NOT NULL,
+            PRIMARY KEY (repo_id, issue_number)
+        );
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))
@@ -305,18 +312,13 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
              1. Check for an existing spec by reading the issue's comments:\n\
              \x20  `gh api repos/{owner}/{repo}/issues/{number}/comments --jq '.[].body'`\n\
              \x20  Look for a comment that starts with \"## Spec\" or contains a specification.\n\
-             2. **If an existing spec is found**: Present it to the user and ask if there's anything they'd like to update. If they confirm it's good, skip to step 6.\n\
+             2. **If an existing spec is found**: Present it to the user and ask if there's anything they'd like to update. If they confirm it's good, you're done — tell the user the spec is ready.\n\
              3. **If no spec exists**: Read the issue thoroughly and explore the codebase to understand the architecture, conventions, and relevant code paths.\n\
              4. If you have blocking questions that prevent you from writing the spec:\n\
              \x20  a. Post a comment on the issue with your questions: `gh issue comment {number} -R {owner}/{repo} --body \"## Questions\\n\\n...\"`\n\
-             \x20  b. Add the blocked label: `gh issue edit {number} -R {owner}/{repo} --add-label \"autodev:blocked\"`\n\
-             \x20  c. Remove the planning label if present: `gh issue edit {number} -R {owner}/{repo} --remove-label \"autodev:planning\"`\n\
-             \x20  d. Stop and tell the user you've posted questions on the issue.\n\
+             \x20  b. Stop and tell the user you've posted questions on the issue.\n\
              5. Write the spec and post it as a comment on the issue:\n\
-             \x20  `gh issue comment {number} -R {owner}/{repo} --body \"## Spec\\n\\n...\"`\n\
-             6. Move the issue to in-progress to trigger implementation:\n\
-             \x20  a. Add the in-progress label: `gh issue edit {number} -R {owner}/{repo} --add-label \"autodev:in-progress\"`\n\
-             \x20  b. Remove planning/blocked labels if present: `gh issue edit {number} -R {owner}/{repo} --remove-label \"autodev:planning\" --remove-label \"autodev:blocked\"`\n\n\
+             \x20  `gh issue comment {number} -R {owner}/{repo} --body \"## Spec\\n\\n...\"`\n\n\
              ## Specification format\n\
              Your spec comment should include:\n\
              - **Summary**: One-sentence description of what this change does.\n\
@@ -327,7 +329,7 @@ fn seed_default_prompts(conn: &Connection) -> Result<(), String> {
              - Do NOT make any code changes. This is a read-only analysis stage.\n\
              - Do NOT guess at implementation details you haven't verified by reading the code.\n\
              - Keep the spec concise and actionable — a developer should be able to implement from it.\n\
-             - Always use the `gh` CLI to interact with GitHub — never modify labels or comments through any other means.",
+             - Do NOT modify GitHub labels — board state is managed by the app automatically.",
         ),
         (
             "implement",
@@ -512,6 +514,10 @@ pub fn delete_repo_cascade(conn: &Connection, repo_id: i64) -> Result<(), String
     conn.execute("DELETE FROM sessions WHERE repo_id = ?1", params![repo_id])
         .map_err(|e| format!("Failed to delete sessions: {e}"))?;
 
+    // Delete issue state
+    conn.execute("DELETE FROM issue_state WHERE repo_id = ?1", params![repo_id])
+        .map_err(|e| format!("Failed to delete issue states: {e}"))?;
+
     // Delete repo-specific settings
     conn.execute(
         "DELETE FROM settings WHERE key = ?1",
@@ -607,6 +613,46 @@ pub fn update_repo(conn: &Connection, repo: &RepoConfig) -> Result<(), String> {
         ],
     )
     .map_err(|e| format!("Failed to update repo: {e}"))?;
+    Ok(())
+}
+
+// ── Issue State ─────────────────────────────────────────────────────────
+
+/// Get all issue column assignments for a repo.
+pub fn get_issue_states_for_repo(
+    conn: &Connection,
+    repo_id: i64,
+) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT issue_number, column_id FROM issue_state WHERE repo_id = ?1")
+        .map_err(|e| format!("Failed to query issue states: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![repo_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("Failed to query issue states: {e}"))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| format!("Failed to read issue state: {e}"))?);
+    }
+    Ok(result)
+}
+
+/// Set the column for an issue. Creates or updates the row.
+pub fn set_issue_column(
+    conn: &Connection,
+    repo_id: i64,
+    issue_number: i64,
+    column_id: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO issue_state (repo_id, issue_number, column_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT(repo_id, issue_number) DO UPDATE SET column_id = excluded.column_id",
+        params![repo_id, issue_number, column_id],
+    )
+    .map_err(|e| format!("Failed to set issue column: {e}"))?;
     Ok(())
 }
 
