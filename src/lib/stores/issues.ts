@@ -10,9 +10,17 @@ export const issues = writable<Issue[]>([]);
 const nextPage = new Map<string, number>();
 
 /** Whether more pages are available per repo (key: "owner/name") */
-const repoHasMore = new Map<string, boolean>();
+const repoHasMore = writable<Map<string, boolean>>(new Map());
 
-export const hasMoreIssues = writable(false);
+export const hasMoreIssues = derived(
+	[selectedRepoId, repos, repoHasMore],
+	([$selectedRepoId, $repos, $repoHasMore]) => {
+		if (!$selectedRepoId) return false;
+		const repo = $repos.find((r) => r.id === $selectedRepoId);
+		if (!repo) return false;
+		return $repoHasMore.get(`${repo.owner}/${repo.name}`) ?? false;
+	}
+);
 
 export const issuesByColumn = derived(
 	[issues, selectedRepoId, repos, sessionByIssue],
@@ -67,48 +75,9 @@ export const issuesByColumn = derived(
 	}
 );
 
-/** Refresh page 1 for a repo (replaces existing issues for that repo with page 1). */
-export async function refreshIssues(owner: string, name: string) {
-	const { fetchIssues } = await import('./backend');
-	const fetched = await fetchIssues(owner, name, 1);
-	const key = `${owner}/${name}`;
-	nextPage.set(key, 2);
-	repoHasMore.set(key, fetched.length >= 100);
-	hasMoreIssues.set(fetched.length >= 100);
-
+/** Merge fetched issues into the store (update existing, append new). */
+function mergeIssues(fetched: Issue[]) {
 	issues.update((current) => {
-		// Remove existing issues for this repo, then add the fresh ones
-		const other = current.filter(
-			(i) => !(i.repo_owner === owner && i.repo_name === name)
-		);
-		return [...other, ...fetched];
-	});
-}
-
-/** Load the next page of issues for the currently selected repo. */
-export async function loadMoreIssues() {
-	const $repos = get(repos);
-	const $selectedRepoId = get(selectedRepoId);
-	if (!$selectedRepoId) return;
-
-	const repo = $repos.find((r) => r.id === $selectedRepoId);
-	if (!repo) return;
-
-	const key = `${repo.owner}/${repo.name}`;
-	if (!repoHasMore.get(key)) return;
-
-	const page = nextPage.get(key) ?? 2;
-	const { fetchIssues } = await import('./backend');
-	const fetched = await fetchIssues(repo.owner, repo.name, page);
-
-	nextPage.set(key, page + 1);
-	repoHasMore.set(key, fetched.length >= 100);
-	hasMoreIssues.set(fetched.length >= 100);
-
-	if (fetched.length === 0) return;
-
-	issues.update((current) => {
-		// Merge: add new issues, update existing ones
 		const updated = [...current];
 		for (const incoming of fetched) {
 			const idx = updated.findIndex(
@@ -125,4 +94,52 @@ export async function loadMoreIssues() {
 		}
 		return updated;
 	});
+}
+
+/** Refresh page 1 for a repo, replacing all issues for that repo with the fresh set. */
+export async function refreshIssues(owner: string, name: string) {
+	const { fetchIssues } = await import('./backend');
+	const fetched = await fetchIssues(owner, name, 1);
+	const key = `${owner}/${name}`;
+	nextPage.set(key, 2);
+	repoHasMore.update((m) => new Map(m).set(key, fetched.length >= 100));
+
+	// Replace all issues for this repo (removes stale/closed/deleted issues)
+	issues.update((current) => {
+		const other = current.filter(
+			(i) => !(i.repo_owner === owner && i.repo_name === name)
+		);
+		return [...other, ...fetched];
+	});
+}
+
+/** Load the next page of issues for the currently selected repo. */
+let _loadingMore = false;
+export async function loadMoreIssues() {
+	if (_loadingMore) return;
+	_loadingMore = true;
+	try {
+		const $repos = get(repos);
+		const $selectedRepoId = get(selectedRepoId);
+		if (!$selectedRepoId) return;
+
+		const repo = $repos.find((r) => r.id === $selectedRepoId);
+		if (!repo) return;
+
+		const key = `${repo.owner}/${repo.name}`;
+		if (!get(repoHasMore).get(key)) return;
+
+		const page = nextPage.get(key) ?? 2;
+		const { fetchIssues } = await import('./backend');
+		const fetched = await fetchIssues(repo.owner, repo.name, page);
+
+		nextPage.set(key, page + 1);
+		repoHasMore.update((m) => new Map(m).set(key, fetched.length >= 100));
+
+		if (fetched.length === 0) return;
+
+		mergeIssues(fetched);
+	} finally {
+		_loadingMore = false;
+	}
 }

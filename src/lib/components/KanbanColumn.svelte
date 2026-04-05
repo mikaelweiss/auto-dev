@@ -21,17 +21,13 @@
 	} = $props();
 
 	const flipDurationMs = 200;
-	let loading = $state(false);
 
 	function handleScroll(e: Event) {
-		if (!onloadmore || loading) return;
+		if (!onloadmore) return;
 		const el = e.currentTarget as HTMLElement;
 		const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 		if (distanceFromBottom < 200) {
-			loading = true;
 			onloadmore();
-			// Reset flag after a short delay so it can fire again on subsequent scrolls
-			setTimeout(() => { loading = false; }, 500);
 		}
 	}
 </script>
