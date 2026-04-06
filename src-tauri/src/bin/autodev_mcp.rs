@@ -1,4 +1,6 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -45,7 +47,10 @@ fn write_message(writer: &mut impl Write, msg: &Value) -> io::Result<()> {
 
 fn handle_request(request: &Value) -> Option<Value> {
     let id = request.get("id").cloned();
-    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let method = request
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
 
     match method {
         "initialize" => Some(json!({
@@ -108,29 +113,29 @@ fn handle_request(request: &Value) -> Option<Value> {
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
 
-            let message = match tool_name {
-                "advance_to_blocked" => {
-                    "State updated to blocked. AutoDev has been notified and will present your questions to the user. Stop working now and wait for a response."
-                }
-                "advance_to_in_progress" => {
-                    "State updated to in_progress. AutoDev will automatically start the implementation phase in a new session. Stop working now."
-                }
-                "advance_to_review" => {
-                    "State updated to review. The code is now marked as ready for human review. Stop working now."
-                }
-                _ => "Unknown tool",
-            };
-
-            Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{
-                        "type": "text",
-                        "text": message
-                    }]
-                }
-            }))
+            match call_autodev(tool_name) {
+                Ok(msg) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": msg
+                        }]
+                    }
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": format!("Error: {e}")
+                        }],
+                        "isError": true
+                    }
+                })),
+            }
         }
 
         _ => {
@@ -148,4 +153,74 @@ fn handle_request(request: &Value) -> Option<Value> {
             }
         }
     }
+}
+
+/// Call back to the Tauri app's HTTP server to perform the actual state change.
+fn call_autodev(action: &str) -> Result<String, String> {
+    let port = std::env::var("AUTODEV_CALLBACK_PORT")
+        .map_err(|_| "AUTODEV_CALLBACK_PORT not set — MCP server not connected to AutoDev app")?;
+    let session_id = std::env::var("AUTODEV_SESSION_ID")
+        .map_err(|_| "AUTODEV_SESSION_ID not set")?;
+    let repo_id = std::env::var("AUTODEV_REPO_ID")
+        .map_err(|_| "AUTODEV_REPO_ID not set")?;
+    let issue_number = std::env::var("AUTODEV_ISSUE_NUMBER")
+        .map_err(|_| "AUTODEV_ISSUE_NUMBER not set")?;
+
+    let body = json!({
+        "action": action,
+        "session_id": session_id,
+        "repo_id": repo_id,
+        "issue_number": issue_number,
+    })
+    .to_string();
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .map_err(|e| format!("Failed to connect to AutoDev app: {e}"))?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .ok();
+
+    let request = format!(
+        "POST /signal HTTP/1.1\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    );
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Write failed: {e}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("Read failed: {e}"))?;
+
+    // Extract body from HTTP response
+    let resp_body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+
+    // Parse response JSON to get the message
+    if let Ok(resp_json) = serde_json::from_str::<Value>(resp_body) {
+        if let Some(msg) = resp_json["message"].as_str() {
+            return Ok(msg.to_string());
+        }
+        if let Some(err) = resp_json["error"].as_str() {
+            return Err(err.to_string());
+        }
+    }
+
+    // If response starts with HTTP/1.1 4xx or 5xx, it's an error
+    if response.starts_with("HTTP/1.1 4") || response.starts_with("HTTP/1.1 5") {
+        return Err(format!("AutoDev app returned error: {resp_body}"));
+    }
+
+    Ok("Signal sent successfully".to_string())
 }

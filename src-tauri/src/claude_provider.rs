@@ -1,5 +1,4 @@
-use crate::provider::{self, ParsedLine, Provider, ProviderKind, SessionConfig};
-use crate::sdk_types::CliMessage;
+use crate::provider::{ParsedLine, Provider, ProviderKind, SessionConfig};
 
 /// Claude Code CLI provider.
 pub struct ClaudeProvider;
@@ -58,11 +57,19 @@ impl Provider for ClaudeProvider {
 
         // Inject MCP config for autodev state advancement tools
         if let Some(ref mcp_binary) = config.mcp_binary_path {
+            let mut env_vars = serde_json::Map::new();
+            if let Some(port) = config.mcp_callback_port {
+                env_vars.insert("AUTODEV_CALLBACK_PORT".into(), serde_json::json!(port.to_string()));
+                env_vars.insert("AUTODEV_SESSION_ID".into(), serde_json::json!(config.session_db_id.to_string()));
+                env_vars.insert("AUTODEV_REPO_ID".into(), serde_json::json!(config.repo_id.to_string()));
+                env_vars.insert("AUTODEV_ISSUE_NUMBER".into(), serde_json::json!(config.issue_number.to_string()));
+            }
             let mcp_config = serde_json::json!({
                 "mcpServers": {
                     "autodev": {
                         "command": mcp_binary,
-                        "args": []
+                        "args": [],
+                        "env": serde_json::Value::Object(env_vars)
                     }
                 }
             });
@@ -88,6 +95,8 @@ impl Provider for ClaudeProvider {
     }
 
     fn parse_line(&self, line: &str) -> ParsedLine {
+        use crate::sdk_types::CliMessage;
+
         let msg = CliMessage::parse(line);
 
         let session_id = msg.session_id().map(String::from);
@@ -98,18 +107,12 @@ impl Provider for ClaudeProvider {
             None
         };
 
-        // Detect state advancement signals from MCP tool calls
-        let signal = serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|json| provider::detect_signal_from_json(&json));
-
         let entries = msg.to_log_entries();
 
         ParsedLine {
             entries,
             session_id,
             cost_usd,
-            signal,
         }
     }
 }

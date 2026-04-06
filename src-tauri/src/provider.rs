@@ -1,76 +1,10 @@
 use std::process::Stdio;
 
-use serde_json::Value;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::sdk_types::LogEntry;
 use crate::types::*;
-
-// ── State Signals ──────────────────────────────────────────────────────
-
-/// A state transition signal from the AI via MCP tools.
-#[derive(Debug, Clone)]
-pub enum StateSignal {
-    AdvanceToBlocked,
-    AdvanceToInProgress,
-    AdvanceToReview,
-}
-
-/// Try to detect a state signal from a raw JSON line by looking for MCP tool calls.
-/// Works across all providers by checking multiple naming conventions.
-pub fn detect_signal_from_json(json: &Value) -> Option<StateSignal> {
-    // Claude: {"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__autodev__advance_to_blocked","input":{...}}]}}
-    if let Some(content) = json.pointer("/message/content").and_then(|c| c.as_array()) {
-        for block in content {
-            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                if let Some(signal) = parse_tool_name_and_input(
-                    block.get("name").and_then(|n| n.as_str()),
-                    block.get("input"),
-                ) {
-                    return Some(signal);
-                }
-            }
-        }
-    }
-
-    // Codex: {"type":"item.completed","item":{"type":"mcp_tool_call","details":{"tool":"advance_to_blocked","arguments":{...}}}}
-    if json.pointer("/item/type").and_then(|t| t.as_str()) == Some("mcp_tool_call") {
-        if let Some(signal) = parse_tool_name_and_input(
-            json.pointer("/item/details/tool").and_then(|n| n.as_str()),
-            json.pointer("/item/details/arguments"),
-        ) {
-            return Some(signal);
-        }
-    }
-
-    // OpenCode: {"type":"tool_use","part":{"tool":"advance_to_blocked","state":{"input":{...}}}}
-    if json.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-        if let Some(signal) = parse_tool_name_and_input(
-            json.pointer("/part/tool").and_then(|n| n.as_str()),
-            json.pointer("/part/state/input"),
-        ) {
-            return Some(signal);
-        }
-    }
-
-    None
-}
-
-fn parse_tool_name_and_input(name: Option<&str>, _input: Option<&Value>) -> Option<StateSignal> {
-    let name = name?;
-    // Strip mcp__autodev__ prefix if present
-    let tool = name
-        .strip_prefix("mcp__autodev__")
-        .unwrap_or(name);
-
-    match tool {
-        "advance_to_blocked" => Some(StateSignal::AdvanceToBlocked),
-        "advance_to_in_progress" => Some(StateSignal::AdvanceToInProgress),
-        "advance_to_review" => Some(StateSignal::AdvanceToReview),
-        _ => None,
-    }
-}
 
 // ── Provider Kind ───────────────────────────────────────────────────────
 
@@ -248,13 +182,19 @@ pub struct SessionConfig {
     pub resume_session_id: Option<String>,
     /// Path to the autodev-mcp binary for state advancement tools.
     pub mcp_binary_path: Option<String>,
+    /// Port the MCP callback HTTP server is listening on.
+    pub mcp_callback_port: Option<u16>,
+    /// Session DB id (passed to MCP binary so it can identify itself in callbacks).
+    pub session_db_id: i64,
+    /// Repo DB id (passed to MCP binary for state changes).
+    pub repo_id: i64,
+    /// Issue number (passed to MCP binary for state changes).
+    pub issue_number: i64,
 }
 
 /// The result of running a provider session.
 pub struct ProviderSessionResult {
     pub cost_usd: Option<f64>,
-    /// State signal detected from MCP tool calls during the session.
-    pub signal: Option<StateSignal>,
 }
 
 // ── Provider Trait ──────────────────────────────────────────────────────
@@ -284,7 +224,6 @@ pub struct ParsedLine {
     pub entries: Vec<LogEntry>,
     pub session_id: Option<String>,
     pub cost_usd: Option<f64>,
-    pub signal: Option<StateSignal>,
 }
 
 // ── Shared Session Runner ───────────────────────────────────────────────
@@ -337,7 +276,6 @@ pub async fn run_provider_session(
     let mut reader = BufReader::new(stdout).lines();
     let mut cli_session_id: Option<String> = None;
     let mut cost_usd: Option<f64> = None;
-    let mut last_signal: Option<StateSignal> = None;
 
     while let Some(line) = reader
         .next_line()
@@ -357,11 +295,6 @@ pub async fn run_provider_session(
         // Capture cost
         if let Some(cost) = parsed.cost_usd {
             cost_usd = Some(cost);
-        }
-
-        // Capture state signal
-        if let Some(signal) = parsed.signal {
-            last_signal = Some(signal);
         }
 
         // Emit log entries
@@ -397,10 +330,7 @@ pub async fn run_provider_session(
     {
         use std::os::unix::process::ExitStatusExt;
         if status.signal() == Some(libc::SIGTERM) {
-            return Ok(ProviderSessionResult {
-                cost_usd,
-                signal: None,
-            });
+            return Ok(ProviderSessionResult { cost_usd });
         }
     }
 
@@ -425,10 +355,7 @@ pub async fn run_provider_session(
         return Err(detail);
     }
 
-    Ok(ProviderSessionResult {
-        cost_usd,
-        signal: last_signal,
-    })
+    Ok(ProviderSessionResult { cost_usd })
 }
 
 // ── Provider Registry ───────────────────────────────────────────────────

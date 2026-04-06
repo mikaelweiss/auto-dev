@@ -8,6 +8,7 @@ mod codex_provider;
 mod db;
 mod opencode_provider;
 mod github;
+mod mcp_handler;
 mod polling;
 mod provider;
 mod sdk_types;
@@ -22,6 +23,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Maps session DB id -> child process PID for active Claude sessions.
     pub active_pids: Mutex<HashMap<i64, u32>>,
+    /// Signals received from the MCP callback server, keyed by session DB id.
+    pub mcp_signals: mcp_handler::SignalStore,
+    /// Port the MCP callback HTTP server is listening on.
+    pub mcp_callback_port: u16,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,10 +40,24 @@ pub fn run() {
             let conn = db::open_and_init()
                 .map_err(|e| format!("Failed to initialize database: {e}"))?;
 
+            // Start MCP callback server on a random port (bind synchronously so
+            // we have the port before AppState is constructed).
+            let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| format!("MCP callback server bind failed: {e}"))?;
+            let mcp_port = std_listener
+                .local_addr()
+                .map_err(|e| format!("MCP callback server addr failed: {e}"))?
+                .port();
+            std_listener
+                .set_nonblocking(true)
+                .map_err(|e| format!("MCP callback server nonblocking failed: {e}"))?;
+
             let state = AppState {
                 db: Mutex::new(conn),
                 http_client: reqwest::Client::new(),
                 active_pids: Mutex::new(HashMap::new()),
+                mcp_signals: Mutex::new(HashMap::new()),
+                mcp_callback_port: mcp_port,
             };
 
             // Clean up any sessions left running from a previous app launch
@@ -64,6 +83,14 @@ pub fn run() {
             };
 
             app.manage(state);
+
+            // Start the MCP callback accept loop now that AppState is registered.
+            // We pass the std listener and convert to tokio inside the spawned task,
+            // because the Tokio reactor isn't available yet in setup().
+            tauri::async_runtime::spawn(mcp_handler::run_callback_server(
+                std_listener,
+                app.handle().clone(),
+            ));
 
             if has_auth {
                 polling::start_polling(app.handle().clone(), interval);

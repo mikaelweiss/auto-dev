@@ -1,4 +1,4 @@
-use crate::provider::{self, ParsedLine, Provider, ProviderKind, SessionConfig};
+use crate::provider::{ParsedLine, Provider, ProviderKind, SessionConfig};
 use crate::sdk_types::LogEntry;
 use serde_json::Value;
 
@@ -56,11 +56,19 @@ impl Provider for OpencodeProvider {
         // Write MCP config file for autodev state advancement
         if let Some(ref mcp_binary) = config.mcp_binary_path {
             let wt = std::path::Path::new(&config.worktree_path);
+            let mut env_vars = serde_json::Map::new();
+            if let Some(port) = config.mcp_callback_port {
+                env_vars.insert("AUTODEV_CALLBACK_PORT".into(), serde_json::json!(port.to_string()));
+                env_vars.insert("AUTODEV_SESSION_ID".into(), serde_json::json!(config.session_db_id.to_string()));
+                env_vars.insert("AUTODEV_REPO_ID".into(), serde_json::json!(config.repo_id.to_string()));
+                env_vars.insert("AUTODEV_ISSUE_NUMBER".into(), serde_json::json!(config.issue_number.to_string()));
+            }
             let mcp_config = serde_json::json!({
                 "mcpServers": {
                     "autodev": {
                         "command": mcp_binary,
-                        "args": []
+                        "args": [],
+                        "env": serde_json::Value::Object(env_vars)
                     }
                 }
             });
@@ -95,7 +103,6 @@ impl Provider for OpencodeProvider {
                 entries: vec![],
                 session_id: None,
                 cost_usd: None,
-                signal: None,
             };
         }
 
@@ -111,7 +118,6 @@ impl Provider for OpencodeProvider {
             }],
             session_id: None,
             cost_usd: None,
-            signal: None,
         }
     }
 }
@@ -132,9 +138,6 @@ impl OpencodeProvider {
         // Capture sessionID from any event
         let session_id = json["sessionID"].as_str().map(String::from);
 
-        // Check for MCP state signals in every line
-        let signal = provider::detect_signal_from_json(json);
-
         match event_type {
             // Assistant text response
             "text" => {
@@ -144,7 +147,7 @@ impl OpencodeProvider {
                     .trim()
                     .to_string();
                 if text.is_empty() {
-                    return ParsedLine { entries: vec![], session_id, cost_usd: None, signal };
+                    return ParsedLine { entries: vec![], session_id, cost_usd: None };
                 }
                 ParsedLine {
                     entries: vec![LogEntry {
@@ -153,7 +156,6 @@ impl OpencodeProvider {
                     }],
                     session_id,
                     cost_usd: None,
-                    signal,
                 }
             }
 
@@ -175,7 +177,6 @@ impl OpencodeProvider {
                         }],
                         session_id,
                         cost_usd: None,
-                        signal,
                     };
                 }
 
@@ -238,7 +239,6 @@ impl OpencodeProvider {
                     }],
                     session_id,
                     cost_usd: None,
-                    signal,
                 }
             }
 
@@ -250,7 +250,7 @@ impl OpencodeProvider {
                     .trim()
                     .to_string();
                 if text.is_empty() {
-                    return ParsedLine { entries: vec![], session_id, cost_usd: None, signal };
+                    return ParsedLine { entries: vec![], session_id, cost_usd: None };
                 }
                 ParsedLine {
                     entries: vec![LogEntry {
@@ -259,7 +259,6 @@ impl OpencodeProvider {
                     }],
                     session_id,
                     cost_usd: None,
-                    signal,
                 }
             }
 
@@ -277,12 +276,11 @@ impl OpencodeProvider {
                     }],
                     session_id,
                     cost_usd: None,
-                    signal,
                 }
             }
 
             // step_start, step_finish — no useful display info
-            _ => ParsedLine { entries: vec![], session_id, cost_usd: None, signal },
+            _ => ParsedLine { entries: vec![], session_id, cost_usd: None },
         }
     }
 }

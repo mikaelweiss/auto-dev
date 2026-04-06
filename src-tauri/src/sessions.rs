@@ -231,6 +231,7 @@ pub async fn session_start(
     let spec_issue_number = issue_number;
 
     let mcp_binary = provider::find_mcp_binary();
+    let mcp_port = state.mcp_callback_port;
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -243,6 +244,10 @@ pub async fn session_start(
             effort: effort_for_spawn,
             resume_session_id: None,
             mcp_binary_path: mcp_binary,
+            mcp_callback_port: Some(mcp_port),
+            session_db_id,
+            repo_id: spec_repo_id,
+            issue_number: spec_issue_number,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -253,48 +258,13 @@ pub async fn session_start(
                     save_session_cost(&app, session_db_id, cost);
                 }
 
-                match res.signal {
-                    Some(provider::StateSignal::AdvanceToInProgress) => {
-                        // Spec complete — auto-start implement
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        set_issue_column_via_app(&app, spec_repo_id, spec_issue_number, "in_progress");
-                        let _ = app.emit(
-                            "session-log",
-                            SessionLogEvent {
-                                session_id: session_db_id.to_string(),
-                                entry: SessionLogEntry {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    session_id: session_db_id.to_string(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    event_type: "status_change".to_string(),
-                                    content: "Spec complete — starting implementation".to_string(),
-                                },
-                            },
-                        );
-                        auto_start_implement(&app, spec_repo_id, spec_issue_number).await;
-                    }
-                    Some(provider::StateSignal::AdvanceToBlocked) => {
-                        // Spec needs human input
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        set_issue_column_via_app(&app, spec_repo_id, spec_issue_number, "blocked");
-                    }
-                    _ => {
-                        // No signal — just mark completed
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        let _ = app.emit(
-                            "session-log",
-                            SessionLogEvent {
-                                session_id: session_db_id.to_string(),
-                                entry: SessionLogEntry {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    session_id: session_db_id.to_string(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    event_type: "status_change".to_string(),
-                                    content: "Spec stage completed".to_string(),
-                                },
-                            },
-                        );
-                    }
+                // Column changes already happened via MCP callback.
+                // Just mark completed and handle auto-start if needed.
+                update_status_via_app(&app, session_db_id, "completed", None);
+
+                let signal = crate::mcp_handler::take_signal(&app, session_db_id);
+                if let Some(crate::mcp_handler::StateSignal::AdvanceToInProgress) = signal {
+                    auto_start_implement(&app, spec_repo_id, spec_issue_number).await;
                 }
             }
             Err(e) => {
@@ -408,6 +378,7 @@ pub async fn session_start_implement(
     let model_for_spawn = stage_model;
     let effort_for_spawn = stage_effort;
     let mcp_binary = provider::find_mcp_binary();
+    let mcp_port = state.mcp_callback_port;
     let impl_repo_id = repo_id;
     let impl_issue_number = issue_number;
 
@@ -422,10 +393,14 @@ pub async fn session_start_implement(
             effort: effort_for_spawn,
             resume_session_id: None,
             mcp_binary_path: mcp_binary,
+            mcp_callback_port: Some(mcp_port),
+            session_db_id,
+            repo_id: impl_repo_id,
+            issue_number: impl_issue_number,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
-        handle_implement_result(&app, result, session_db_id, impl_repo_id, impl_issue_number).await;
+        handle_implement_result(&app, result, session_db_id).await;
         crate::sleep::on_session_end().await;
     });
 
@@ -528,6 +503,7 @@ pub async fn session_start_review(
     let model_for_spawn = stage_model;
     let effort_for_spawn = stage_effort;
     let mcp_binary = provider::find_mcp_binary();
+    let mcp_port = state.mcp_callback_port;
 
     tokio::spawn(async move {
         let prov = provider::get_provider_by_kind(provider_kind);
@@ -540,6 +516,10 @@ pub async fn session_start_review(
             effort: effort_for_spawn,
             resume_session_id: None,
             mcp_binary_path: mcp_binary,
+            mcp_callback_port: Some(mcp_port),
+            session_db_id,
+            repo_id,
+            issue_number,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -549,6 +529,15 @@ pub async fn session_start_review(
                 if let Some(cost) = res.cost_usd {
                     save_session_cost(&app, session_db_id, cost);
                 }
+
+                // Check if the AI signaled blocked — if so, skip push
+                let signal = crate::mcp_handler::take_signal(&app, session_db_id);
+                if let Some(crate::mcp_handler::StateSignal::AdvanceToBlocked) = signal {
+                    update_status_via_app(&app, session_db_id, "completed", None);
+                    crate::sleep::on_session_end().await;
+                    return;
+                }
+
                 // Push and create PR
                 let branch_name = format!("{branch_prefix}issue-{issue_number}");
 
@@ -709,6 +698,10 @@ pub async fn session_respond(
     let model_for_spawn = effective_model;
     let effort_for_spawn = effective_effort;
     let mcp_binary = provider::find_mcp_binary();
+    let mcp_port = {
+        let state_ref = app_handle.state::<AppState>();
+        state_ref.mcp_callback_port
+    };
     let respond_stage = stage.clone();
 
     tokio::spawn(async move {
@@ -722,6 +715,10 @@ pub async fn session_respond(
             effort: effort_for_spawn,
             resume_session_id: cli_session_id,
             mcp_binary_path: mcp_binary,
+            mcp_callback_port: Some(mcp_port),
+            session_db_id,
+            repo_id: respond_repo_id,
+            issue_number: respond_issue_number,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app).await;
@@ -732,39 +729,14 @@ pub async fn session_respond(
                     save_session_cost(&app, session_db_id, cost);
                 }
 
-                // Handle signals based on what stage this session is in
-                match res.signal {
-                    Some(provider::StateSignal::AdvanceToInProgress) if respond_stage == "spec" => {
-                        // Spec complete after blocked response — auto-start implement
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "in_progress");
+                // Column changes already happened via MCP callback.
+                // Just mark completed and handle auto-start if needed.
+                update_status_via_app(&app, session_db_id, "completed", None);
+
+                let signal = crate::mcp_handler::take_signal(&app, session_db_id);
+                if respond_stage == "spec" {
+                    if let Some(crate::mcp_handler::StateSignal::AdvanceToInProgress) = signal {
                         auto_start_implement(&app, respond_repo_id, respond_issue_number).await;
-                    }
-                    Some(provider::StateSignal::AdvanceToReview) if respond_stage == "implement" => {
-                        // Implement complete after blocked response
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "review");
-                    }
-                    Some(provider::StateSignal::AdvanceToBlocked) => {
-                        // Still blocked — need more input
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        set_issue_column_via_app(&app, respond_repo_id, respond_issue_number, "blocked");
-                    }
-                    _ => {
-                        update_status_via_app(&app, session_db_id, "completed", None);
-                        let _ = app.emit(
-                            "session-log",
-                            SessionLogEvent {
-                                session_id: session_db_id.to_string(),
-                                entry: SessionLogEntry {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    session_id: session_db_id.to_string(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    event_type: "status_change".to_string(),
-                                    content: "Session resumed and completed".to_string(),
-                                },
-                            },
-                        );
                     }
                 }
             }
@@ -1073,23 +1045,7 @@ pub async fn session_cleanup(
     worktrees::remove_worktree(&repo_path, &worktree_path, &branch_name).await
 }
 
-// ── State Advancement Helpers ───────────────────────────────────────────
-
-/// Update issue column in DB and emit event to frontend.
-fn set_issue_column_via_app(app: &tauri::AppHandle, repo_id: i64, issue_number: i64, column: &str) {
-    let state = app.state::<AppState>();
-    if let Ok(db) = state.db.lock() {
-        let _ = db::set_issue_column(&db, repo_id, issue_number, column);
-    }
-    let _ = app.emit(
-        "issue-column-changed",
-        serde_json::json!({
-            "repo_id": repo_id,
-            "issue_number": issue_number,
-            "column_id": column,
-        }),
-    );
-}
+// ── Auto-Start Helpers ─────────────────────────────────────────────────
 
 /// Auto-start the implement phase for an issue (called after spec signals advance_to_in_progress).
 async fn auto_start_implement(app: &tauri::AppHandle, repo_id: i64, issue_number: i64) {
@@ -1187,6 +1143,10 @@ async fn auto_start_implement(app: &tauri::AppHandle, repo_id: i64, issue_number
          Remember: you MUST call `advance_to_review()` or `advance_to_blocked()` before finishing."
     );
     let mcp_binary = provider::find_mcp_binary();
+    let mcp_port = {
+        let state = app.state::<AppState>();
+        state.mcp_callback_port
+    };
 
     let app2 = app.clone();
     tokio::spawn(async move {
@@ -1200,10 +1160,14 @@ async fn auto_start_implement(app: &tauri::AppHandle, repo_id: i64, issue_number
             effort: stage_effort,
             resume_session_id: None,
             mcp_binary_path: mcp_binary,
+            mcp_callback_port: Some(mcp_port),
+            session_db_id,
+            repo_id,
+            issue_number,
         };
 
         let result = provider::run_provider_session(prov.as_ref(), config, session_db_id, &app2).await;
-        handle_implement_result(&app2, result, session_db_id, repo_id, issue_number).await;
+        handle_implement_result(&app2, result, session_db_id).await;
         crate::sleep::on_session_end().await;
     });
 }
@@ -1213,8 +1177,6 @@ async fn handle_implement_result(
     app: &tauri::AppHandle,
     result: Result<provider::ProviderSessionResult, String>,
     session_db_id: i64,
-    repo_id: i64,
-    issue_number: i64,
 ) {
     match result {
         Ok(res) => {
@@ -1222,41 +1184,12 @@ async fn handle_implement_result(
                 save_session_cost(app, session_db_id, cost);
             }
 
-            match res.signal {
-                Some(provider::StateSignal::AdvanceToReview) => {
-                    update_status_via_app(app, session_db_id, "completed", None);
-                    set_issue_column_via_app(app, repo_id, issue_number, "review");
-                    let _ = app.emit(
-                        "session-log",
-                        SessionLogEvent {
-                            session_id: session_db_id.to_string(),
-                            entry: SessionLogEntry {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                session_id: session_db_id.to_string(),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                event_type: "status_change".to_string(),
-                                content: "Implementation complete — moved to review".to_string(),
-                            },
-                        },
-                    );
-                }
-                Some(provider::StateSignal::AdvanceToBlocked) => {
-                    update_status_via_app(app, session_db_id, "completed", None);
-                    set_issue_column_via_app(app, repo_id, issue_number, "blocked");
-                }
-                _ => {
-                    // No signal — just mark completed and advance to review by default
-                    update_status_via_app(app, session_db_id, "completed", None);
-                    set_issue_column_via_app(app, repo_id, issue_number, "review");
-                    let _ = app.emit(
-                        "session-advance",
-                        serde_json::json!({
-                            "session_id": session_db_id.to_string(),
-                            "next_stage": "review",
-                        }),
-                    );
-                }
-            }
+            // Column changes already happened via MCP callback.
+            // Just mark completed.
+            update_status_via_app(app, session_db_id, "completed", None);
+
+            // Consume the signal (no further action needed — column already set by MCP)
+            let _ = crate::mcp_handler::take_signal(app, session_db_id);
         }
         Err(e) => {
             update_status_via_app(app, session_db_id, "failed", Some(&e));
